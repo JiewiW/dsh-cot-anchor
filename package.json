@@ -21,6 +21,8 @@
   "files": [
     "lib/",
     "!lib/**/*.bak*",
+    "tools/",
+    "docs/softcut-kernel-port.md",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -39,7 +41,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/dsh-cot-anchor.git"
+    "url": "git+https://github.com/JiewiW/dsh-cot-anchor.git"
+  },
+  "homepage": "https://github.com/JiewiW/dsh-cot-anchor#readme",
+  "bugs": {
+    "url": "https://github.com/JiewiW/dsh-cot-anchor/issues"
   },
   "license": "MIT"
 }

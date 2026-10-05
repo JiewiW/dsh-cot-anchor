@@ -64,6 +64,15 @@ dsh plugin --profile <你的profile> add github:<owner>/dsh-cot-anchor
 
 0.1.5-rc.3 起内核不再提供生成中途打断所需的钩子，该能力会静默失效。插件会在启动日志和设置页顶部明确提示当前内核是否具备该能力——**请以设置页显示为准**，不要凭"开关是开的"就认为功能在生效。
 
+如果你希望在新版上保留这项能力，可用随包附带的工具把软切机构移植回内核：
+
+```sh
+node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs --check   # 看状态
+node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs           # 应用（幂等）
+```
+
+移植后需重启实例。完整步骤、原理、风险与回滚见 [docs/softcut-kernel-port.md](docs/softcut-kernel-port.md)。
+
 本插件不会中止进行中的回合；它只在模型自己写坏输出时切断**当前这一次生成请求**，随后继续。
 
 ## 设置项
