@@ -1,5 +1,23 @@
 # dsh-cot-anchor 发行说明
 
+## v0.1.2 — 成本实测补充与注入文本优化
+
+**更新**：
+- 命令执行纪律的注入文本改为通用行为表述（长任务按固定短间隔轮询等待），不再引用特定脚本路径。
+- README「成本」章节新增「实测成本占比」小节——95 次助手请求、约 924 万 token 的真实长会话上，注入新增估算 21,436 token（占全会话约 0.23%），其中固定纪律文本 80.2%、动态锚点 19.8%；附基于会话日志 `source.summary` 与 `usage` 字段的自复算口径。
+- 测试样例文本与代码注释做了通用化整理，测试句式与断言语义不变。
+
+**验证**：`node --check lib/index.js` 通过；仓库全部 22 个测试文件通过。无设置项、对外接口变化，0.1.0/0.1.1 可直接升级。
+
+**安装**：
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.2
+# 或
+gh release download v0.1.2 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.2.tgz
+```
+
 ## v0.1.1 — 纪律常量前置，命中 KV 前缀缓存
 
 **变化**：工具结果后的注入顺序由 `[锚点, 纪律]` 调整为 `[纪律, 锚点]`（`tools/post-execute` 的两条返回路径同步修改，插件其余注入点均为单上下文，不涉及顺序）。无设置项、对外接口与默认行为变化，0.1.0 可直接升级。

@@ -57,11 +57,11 @@
 
 ```sh
 # 直接拉指定 tag
-dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.1
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.2
 
 # 或先下载再装
-gh release download v0.1.1 --repo JiewiW/dsh-cot-anchor
-dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.1.tgz
+gh release download v0.1.2 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.2.tgz
 ```
 
 安装后重启实例，设置页出现「COT 锚点」标签即已生效。
@@ -89,6 +89,21 @@ dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.1.tgz
 | 开启 CoT 静默采集 | 每个助手回合留一条本地样本；默认关闭 |
 
 注入消息会随之后续请求的上下文一同发送，因此持续占用少量上下文窗口。按中英混排估算，660 字符约合 200–500 token 量级——相对于一次工具往返的上下文可以忽略，但它在**每一步**都会累积。多条注入的排列原则是**常量在前、变量在后**：固定不变的纪律文本排最前，每步变化的锚点排其后，使连续请求的公共前缀尽可能长，以命中模型侧的前缀缓存（v0.1.1 起）。
+
+### 实测成本占比
+
+在一个 95 次助手请求、累计约 924 万 token 的真实长会话上按消息级口径统计（字符→token 为启发式估算，非 tokenizer 实测；任何人可在自己的 DSH 会话日志上按同口径复算：逐条统计 `user/message` 中 `source.summary` 为 `cot-anchor: exec-discipline`（固定纪律）与其他 `cot-anchor:*`（动态锚点）的文本，并对照各次助手请求 `usage` 的 `inputTokens` / `cacheReadTokens`）：
+
+| 指标 | 数值 |
+| --- | --- |
+| 注入新增估算总量 | 21,436 token，占全会话总 token 约 0.23% |
+| 其中固定纪律文本 | 17,190 token，占注入估算 80.2%（45 条，单条全文固定约 380 token） |
+| 其中动态锚点 | 4,246 token，占注入估算 19.8%（51 条） |
+| 注入估算占会话缓存读取总量 | 约 0.20%（17,190 / 8,786,432） |
+| 注入估算占会话未命中输入 | 约 1.12%（4,246 / 379,969） |
+| 该会话缓存读取占全部输入比 | 95% 以上 |
+
+结论：插件带来的新增输入在全会话 token 总量的 0.3% 以内；纪律文本固定且自 v0.1.1 起置于注入最前，约五分之四的新增内容具备前缀缓存命中条件，真正按未命中全价支付的动态锚点不足注入量的五分之一。
 
 ## 兼容性
 
