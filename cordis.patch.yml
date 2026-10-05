@@ -1,0 +1,10 @@
+# dsh-cot-anchor bundle patch: mount the dsh-cot-anchor plugin.
+#
+# Applied when this bundle appears in a profile's dsh.profile.bundles list.
+# Host half only: listens to tools/post-execute, extracts conclusion sentences
+# from the latest assistant reasoning block, and injects a brief "COT anchor"
+# summary after each tool result so the model does not re-derive
+# already-established conclusions in the next reasoning pass.
+- insert:
+    - id: dsh-cot-anchor
+      name: dsh-cot-anchor
