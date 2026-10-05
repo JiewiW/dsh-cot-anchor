@@ -57,11 +57,11 @@
 
 ```sh
 # 直接拉指定 tag
-dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.0
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.1
 
 # 或先下载再装
-gh release download v0.1.0 --repo JiewiW/dsh-cot-anchor
-dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.0.tgz
+gh release download v0.1.1 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.1.tgz
 ```
 
 安装后重启实例，设置页出现「COT 锚点」标签即已生效。
@@ -83,11 +83,12 @@ dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.0.tgz
 | 场景 | 额外成本 |
 | --- | --- |
 | 默认（结论注入开启，其余关闭） | 每个工具结果后一条短消息，上界 660 字符（3 条 × 220 字）；无额外模型调用 |
+| 命令执行纪律提醒（随锚点同车） | 仅在锚点实际注入时同车携带一条，沿用同一推理指纹去重节奏，不单独排队、不无限堆叠；单条全文固定约 380 token（字符估算）；v0.1.1 起置于注入数组最前以命中 KV 前缀缓存 |
 | 开启 LLM 提炼结论 | 每个助手回合**多一次**小模型调用 |
 | 开启打转判定 | 纯本地字符串计算，无 token 成本；可能增加少量回合数 |
 | 开启 CoT 静默采集 | 每个助手回合留一条本地样本；默认关闭 |
 
-注入消息会随之后续请求的上下文一同发送，因此持续占用少量上下文窗口。按中英混排估算，660 字符约合 200–500 token 量级——相对于一次工具往返的上下文可以忽略，但它在**每一步**都会累积。
+注入消息会随之后续请求的上下文一同发送，因此持续占用少量上下文窗口。按中英混排估算，660 字符约合 200–500 token 量级——相对于一次工具往返的上下文可以忽略，但它在**每一步**都会累积。多条注入的排列原则是**常量在前、变量在后**：固定不变的纪律文本排最前，每步变化的锚点排其后，使连续请求的公共前缀尽可能长，以命中模型侧的前缀缓存（v0.1.1 起）。
 
 ## 兼容性
 
