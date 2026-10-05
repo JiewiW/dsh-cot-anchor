@@ -16,21 +16,18 @@
 
 ## 快速开始
 
-```sh
-# 安装到你的 profile
-dsh plugin --profile <你的profile> add dsh-cot-anchor
-
-# 验证这一层已加载（应能看到 dsh-cot-anchor 层）
-dsh --profile <你的profile> --dump-config
-```
-
-也可从 GitHub 源码安装：
+从 GitHub Releases 拉 tarball 安装（推荐）：
 
 ```sh
-dsh plugin --profile <你的profile> add github:<owner>/dsh-cot-anchor
+# 直接拉指定 tag
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.0
+
+# 或先下载再装
+gh release download v0.1.0 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.0.tgz
 ```
 
-安装后重启实例。设置页出现「COT 锚点」标签即已生效。
+安装后重启实例，设置页出现「COT 锚点」标签即已生效。
 
 ## 工作方式
 
