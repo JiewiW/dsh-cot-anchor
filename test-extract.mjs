@@ -47,6 +47,36 @@ const cases = [
 		reasoning: "根因是缓存。",
 		expectAtLeast: 0,
 		expectFragments: []
+	},
+	{
+		label: "纯标记句（Actually, wait.）→ 不抓",
+		reasoning: "I'm burning turns. Actually, wait. Hmm, hold on. OK so let me reconsider.",
+		expectAtLeast: 0,
+		expectFragments: []
+	},
+	{
+		label: "中文纯标记句（其实，等等。）→ 不抓",
+		reasoning: "其实。等等，嗯，好的，那个。",
+		expectAtLeast: 0,
+		expectFragments: []
+	},
+	{
+		label: "路线意图宣告（decisive route）→ 不抓",
+		reasoning: "I have enough. Actually — the FASTEST decisive route: ask the user to open devtools and run one line. That's a small ask.",
+		expectAtLeast: 0,
+		expectFragments: []
+	},
+	{
+		label: "标记词 + 事实命题 → 仍要抓到（不得误杀）",
+		reasoning: "Actually, wait — the kernel never renders data-turn-process-member under the verbose policy, so every plugin branch misses.",
+		expectAtLeast: 1,
+		expectFragments: ["verbose"]
+	},
+	{
+		label: "Wait 领起的自我修正事实 → 仍要抓到",
+		reasoning: "Wait, I was wrong about the cache layer; the real cause is the missing abort signal in the request.",
+		expectAtLeast: 1,
+		expectFragments: ["abort signal"]
 	}
 ];
 

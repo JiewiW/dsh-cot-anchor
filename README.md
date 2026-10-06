@@ -84,11 +84,11 @@
 
 ```sh
 # 直接拉指定 tag
-dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.4
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.5
 
 # 或先下载再装
-gh release download v0.1.4 --repo JiewiW/dsh-cot-anchor
-dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.4.tgz
+gh release download v0.1.5 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.5.tgz
 ```
 
 安装后重启实例，设置页出现「COT 锚点」标签即已生效。
@@ -184,9 +184,9 @@ node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs           # 应用
 | `maxPoints` | 最多保留几条结论 | 3 |
 | `maxPointChars` | 单条结论字数上限 | 220 |
 
-> **已知失效模式：抽取器会把"话语标记"误当结论回灌。** 结论由规则从思考文本中摘句得到（开启 LLM 提炼时由小模型改写），不理解句子的语义角色。当模型处于空转状态时，"Actually, wait."、"the fastest decisive route is…"这类**转折/决策宣告句**可能被当成"已确立结论"抽出，在下一条注入里以"既定事实"的口吻回灌，反而强化打转。症状是注入的锚点列表里出现没有信息量的口头禅或"让我换条路"式的句子。缓解：调高 `minReasoningChars`、必要时临时关闭 `enableToolInject` 改用纯软切，或开启 LLM 提炼（摘句→摘要通常能滤掉纯标记句）。
+> **抽取质量边界（v0.1.5 已加过滤）：** 结论由规则从思考文本中摘句得到（开启 LLM 提炼时由小模型改写），不理解句子的语义角色。v0.1.5 起，抽取器在入池前剔除两类无命题内容：①**纯话语标记句**——剥掉 Actually / wait / Hmm / hold on / 让我重新 等标记后剩余实词不足 6 个字符（"Actually, wait."、"Hmm."、"其实，等等。"）；②**路线意图宣告句**——"the decisive route: ask the user…"这类下一步动作宣告。标记词**领起但带事实命题**的句子（"Wait, the kernel never marks in verbose mode."）不受影响。
 >
-> 注意这是**抽取质量**问题，不是思考标记词本身的问题——Wait / Actually / Hmm 等转折词在推理链中承担结构控制作用，不应在模型侧压制，本插件也不会从模型输出中删除它们。
+> 这是**抽取质量**问题，不是思考标记词本身的问题——Wait / Actually / Hmm 等转折词在推理链中承担结构控制作用，本插件不从模型输出中删除它们，只阻止它们被当成结论回灌。
 
 ### 重复循环参数
 
