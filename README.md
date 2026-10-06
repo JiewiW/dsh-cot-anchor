@@ -57,11 +57,11 @@
 
 ```sh
 # 直接拉指定 tag
-dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.3
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.4
 
 # 或先下载再装
-gh release download v0.1.3 --repo JiewiW/dsh-cot-anchor
-dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.3.tgz
+gh release download v0.1.4 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.4.tgz
 ```
 
 安装后重启实例，设置页出现「COT 锚点」标签即已生效。
@@ -263,3 +263,4 @@ node test-softcut.mjs         # 软切判定
 ## 许可
 
 MIT
+

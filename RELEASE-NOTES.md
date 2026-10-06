@@ -1,5 +1,22 @@
 # dsh-cot-anchor 发行说明
 
+## v0.1.4 — 命令执行纪律注入文案对齐
+
+**更新**（仅注入文本，无设置项、接口或注入时机变化）：
+- ②「增长型标量」补第 5 项：已下载量是否增加。
+- ③ 僵死终止补充禁令：必须用精确 PID 中断，禁止按命令名通配批量杀，避免误伤并行进程。
+
+**验证**：`node --check lib/index.js` 通过；仓库全部 22 个测试文件通过。0.1.0–0.1.3 可直接升级。
+
+**安装**：
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.4
+# 或
+gh release download v0.1.4 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.4.tgz
+```
+
 ## 更正 — v0.1.1「纪律常量前置命中前缀缓存」论断撤回
 
 v0.1.1 声称把纪律常量排到注入数组最前可命中 KV 前缀缓存。经核对宿主注入链路，该论断不成立：插件注入全程以 `surfaceOp: "append"` 在会话日志尾部追加 `user/message`，不改写已有节点；前缀缓存按 token 位置匹配，固定文本出现在新位置时无法复用旧位置的 KV。顺序 `[纪律, 锚点]` 与 `[锚点, 纪律]` 在缓存行为上等价，v0.1.1 的顺序调整不产生缓存收益。
