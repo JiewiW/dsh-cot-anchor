@@ -62,3 +62,43 @@ churn 是**启发式**检测（换词重分析，有误报余量、注释自述"
 | churn 词典不含复读句 | dsh-cot-anchor/lib/index.js 第1126–1134行 |
 | repeat 阈值与反事实回放（周期 35=phrase33+\n\n；首次命中 19,360 字 count=5；全量 count=1619 trimTo=21956） | dsh-cot-anchor/lib/index.js 第780–887行 |
 | post-execute 短文本 body 空静默跳过 | dsh-cot-anchor/lib/index.js 第3394–3396行 |
+
+## 修复落地状态（v0.1.6，2026-10-07）
+
+本节记录四个缺陷的实际处置，与上方"修复方向"的设想有一处**刻意偏离**，以代码与测试为准。
+
+### 缺陷 1：分类独立预算已落地；超限处置由"硬 abort"改为"静默忽略"
+
+- 内核移植段（`tools/apply-softcut-port.mjs`）把单一闸 `MAX_SOFT_CUTS_PER_TURN=6` 换成三类有界计数：`BUDGET_HEURISTIC=6`、`BUDGET_CONFIRMED_REPEAT=20`、`BUDGET_PSEUDO_TOOL=3`，另有 waterfall 前的廉价总闸 `BUDGET_TOTAL=29`（三类之和；抽屉原理保证 total 到 29 时任一类必已满）。
+- cut 决策新增 `cutClass` 字段：repeat / numberRunaway → `confirmed-repeat`；churn / transition → `heuristic`；伪工具 → `pseudoTool`。缺省（旧内核不返回该字段）一律按 heuristic 处理。
+- **对上方缺陷 1"修复方向"的更正**：原设想"pseudoTool 超限升级为硬 abort 并告警"**未采用**。最终口径是——任一类超限后，该类 cut 决策被**静默忽略**：不 abort 上游请求、不裁尾、不注入，生成流照常继续。理由：软切是可选优化机构，任何分支都无权因"自己的额度用完"而硬终止用户的 turn；硬 abort 会把检测器误报放大成可观测的断流事故。静默忽略的最坏退化是回到"不截停"，不产生新损害。
+- 可达性口径：heuristic 第 7 次超限时 total=6、confirmed-repeat 第 21 次超限时 total=26（真实混合序列里 heuristic 6 次常已耗尽），二者 total<29，真实走 waterfall 返回后的 ignore 分支；pseudoTool 第 4 次恰与 total=29 同时发生，真实流程在 waterfall 前即被总闸 continue，`decideSoftCutBudget` 对该态的 ignore 仅为纯函数防御性分支。
+
+### 缺陷 3：churn 二次升级已落地
+
+同 session 同 turn 内，churn 第 2 次返回的 cut 起在原锚点后追加升级指令（要求下一步必须且只能是一次合法工具调用）；计数键为 `sessionId:turn`，跨 turn 重置。只统计真正返回的 cut 决策，影子期（返回 null）不计入。
+
+### 缺陷 4：ToolArgsError 续步兜底已落地
+
+post-execute 在指纹/结论抽取之前新增错误分支：结果 `isError===true` 且错误为 INVALID_ARGS / ToolArgsError 时，无视 reasoning 长度强制注入四要素恢复锚点（未被执行 / 具体参数名 / 按 schema 只重发一次 / 禁止文本标签）。参数名优先取 `error.info.violations`，否则从错误信息的引号字段解析，两者都取不到时给"必填参数不合法"兜底，不编造参数名。正常结果不触发。
+
+### 缺陷 5（本次新增）：MiniMax 家族裸 invoke 伪工具方言此前漏判
+
+与本配额事故**正交的另一种失效模式**：某 MiniMax 系模型（网关 workbuddy/space-bunny）在一次 turn 里不发结构化 tool_calls，而在 410 字符的 text 块里写出"裸 `<invoke name=…>` + name 子标签"的文本化并行调用，标签间均匀插入 15 个 13 字符提供商边界噪声。旧检测器只认带 antml: 前缀的 invoke、weak 共现只认 function/parameter，该方言两者都不是，`hasPseudoToolCall` 返回 false，本 turn 软切 0 次——但这次是钩子正常、配额充足，**检测器不认识方言**，不是配额短路。完整证据与反事实回放见 `output/cot-anchor-budget-card/analysis-minimax-pseudotool-miss.md`（分析卡片，不随仓库发布）；410 字节真实块（含第 3 个 invoke 开标签 `="` 被噪声吞没的**替换性损伤**）已逐字节固化为测试夹具 `PSEUDO_MINIMAX_PSEUDO_UNIT`（sha256 `2f4ecb50…dd1ee4`，15 个噪声），测试锁死原始口径第 160 字符、剥噪口径第 96 字符首次命中。
+
+修复为检测器纯增强（内核零改动）：新增裸 invoke 开标签信号与裸 `</invoke>` 闭标签；命中式保持先 strong 后 weak 与 hasCloser 前置门，支路一"有包裹三信号"、支路二"无包裹且完整 invoke 块≥2"。**刻意不做**"单块即命中"的宽规则——60 字无包裹教程式完整示例与该形态客观同形，静态规则无法零误报区分（单块无包裹列为有意漏判，靠 repeat 兜其重复形态）。
+
+### 后续项（P2，本次不实现）
+
+1. 提供商边界噪声归一化层：仅对**纯插入型**噪声有效，对 block3 那类替换型破坏（字符被吞）无效；本次靠完整的 block1 命中，非必需。
+2. 流终检兜底：stream 正常结束前对尾部再判一次（不经 abort、改 next-step 注入，语义需单独设计）。任何依赖"最外层闭合"的方案都受其制约。
+3. name 值命中本进程 tools 清单的第三判定：soft-cut payload 无工具清单，需内核扩 payload 联动；现有支路一/二已覆盖真实退化形态，不值当。
+4. 缺陷 2 的按字符硬上限 / 滑动窗口：本次以分类独立预算为主，仍列后续评估；若采用滑动窗口，必须遵守缺陷 2 节写明的两条语义（滑出窗口才恢复额度、窗口按时间/字符而非 step 计数）。
+
+### 上游边界声明（高度疑似 + 待抓包，不断言）
+
+噪声单元泄漏进 text、该方言未被适配器解析成原生 tool_calls，**高度疑似** workbuddy 网关的流式边界标记泄漏且适配器未处理——支持证据：dsh-connect-workbuddy 全包无该噪声的任何处理，其恢复层只认 DSML marker，裸 invoke 无 marker 故既不恢复也不触发重试；13 字符单元固定、均匀出现 15 次、非自然词、且在 block3 处替换吞字，具流式分帧事故特征。**缺口**：无网关原始 SSE 帧抓包，不能排除模型自伤。终判需抓一次 space-bunny 原始流帧；在抓到包前，本复盘与发行说明一律按"高度疑似 + 待抓包"措辞，不断言为网关缺陷。
+
+### 预算计数语义
+
+计数单位是内核的 take/abort 决策：同一条 text 流里即使含多个伪工具块，首次命中即 abort，**计 1 次 cut，不是按块数计多次**。pseudoTool 桶 3 次/turn 对"锚点教不会"的模型理论偏紧；耗尽后按上述静默忽略口径放行，最坏退化回缺陷 5 的形态（零进展但 turn 正常收尾），不产生新损害。
