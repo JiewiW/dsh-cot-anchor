@@ -1,5 +1,39 @@
 # dsh-cot-anchor 发行说明
 
+## v0.1.6 — 分类软切预算 + 工具参数错误续步兜底 + churn 锚点升级 + MiniMax 伪工具方言
+
+### 修复
+
+1. **软切预算按 cutClass 分类（缺陷 1）**：旧内核用单一闸 `MAX_SOFT_CUTS_PER_TURN=6`，不区分触发类型——字节级确证的复读（repeat）与有误报面的启发式打转（churn/transition）共用 6 次额度，话多但健康的 turn 里启发式触发几次就把确证复读的额度挤光，导致真正的 token 级复读不被截停。现改为三类独立计数：`confirmed-repeat`（repeat/numberRunaway，字节级）20 次/turn、`heuristic`（churn/transition）6 次/turn、`pseudoTool`（伪工具文本）3 次/turn，waterfall 前另有 total≥29 的廉价总闸。某类超限后该类决策被**静默忽略**（流继续，不 abort、不裁尾、不注入），不做硬 abort。
+2. **工具参数校验错误续步兜底（缺陷 4）**：模型因 `ToolArgsError`（INVALID_ARGS）导致工具未执行时，即使上一段 reasoning 很短，也强制注入四要素恢复锚点——上一次调用未被执行、缺失/非法的具体参数名（从 violations 或错误信息引号字段提取，取不到时给"必填参数不合法"兜底，不编造）、按参数 schema 修正后只重发一次、禁止把工具调用写成文本标签。正常工具结果不触发。
+3. **churn 锚点二次升级（缺陷 3）**：同一会话同一 turn 内第 2 次起命中语义打转时，在原锚点后追加更强硬的升级指令（要求下一步必须且只能是一次合法工具调用）；跨 turn 计数重置。计数只统计真正返回的 cut 决策，影子期 null 不计。
+4. **MiniMax 家族裸 invoke 伪工具方言识别（缺陷 5）**：新增"裸 `<invoke name=…>` + name 子标签"方言（不带 antml 前缀、标签间可夹一个提供商边界噪声单元）。命中式保持先 strong 后 weak 与 hasCloser 前置门：支路一为"有包裹三信号"，支路二为"无包裹且完整 invoke 块 ≥2"；**不**退化为"单块即命中"的宽规则（60 字无包裹教程式完整示例仍判不命中）。真实事故样本在第 160 字符（剥噪口径 96）即被截停。
+
+### 升级后必须重跑内核移植脚本（重要）
+
+本次预算分类改动了内核移植段（`tools/apply-softcut-port.mjs` 的 A/B/C2 三处产物）。升级本插件后，**必须重新执行一次移植**，否则补丁后内核仍是旧的单闸 6 次逻辑：
+
+```sh
+node tools/apply-softcut-port.mjs --revert   # 先回滚旧移植
+node tools/apply-softcut-port.mjs            # 再应用新移植
+node tools/apply-softcut-port.mjs --check    # 确认「已应用」
+```
+
+脚本幂等、锚点失配会零写入退出；回滚用 `--revert`。详见 docs/incident-20261007-softcut-budget-exhaustion.md。
+
+### 验证
+
+`node --check lib/index.js` 与补丁后内核 `lib/index.js` 均通过；仓库全部 25 个测试文件通过，其中新增 test-budget-class.mjs（cutClass 四分类 + 续步兜底 + churn 升级，26 条）、test-kernel-budget.mjs（内核预算纯函数时序，含 10 项分类判定 + 3 项总闸）、test-pseudotool-minimax.mjs（MiniMax 方言 18 条，含 410 字节真实夹具的 sha256/160/96 锁死）。回滚→未应用→再应用→已应用闭环复验通过。无新增设置项、对外注入接口向后兼容；cutClass 缺省的旧内核按 heuristic 处理，0.1.0–0.1.5 可直接升级（但须按上方重跑移植脚本）。
+
+### 安装
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.1.6
+# 或
+gh release download v0.1.6 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.6.tgz
+```
+
 ## v0.1.5 — 结论抽取过滤空话语句 + 能力边界文档
 
 ### 修复（结论抽取质量）

@@ -39,3 +39,23 @@ export function normalPrefix(segments = 120) {
 		`第 ${i} 步：检查模块 ${i} 的状态与依赖关系，确认第 ${i} 项配置生效。`
 	).join("\n");
 }
+
+/**
+ * MiniMax 家族伪工具方言单元（实测 410 字节、15 个噪声单元）。
+ *
+ * 来源：真实事故会话 session-cc432df1-bea4-47ff-b9e0-221183ee66c6 中模型吐出的
+ * 一段伪 invoke 文本，经 dsh-session-log-extract 解压后固化（该会话日志现已不在
+ * 磁盘，本内联即其逐字节留存；与分析卡片
+ * output/cot-anchor-budget-card/fixtures/minimax-pseudo-text.txt 双源核对一致）。
+ *
+ * 结构特征：
+ *  - 每个标签前都插噪声单元 `]<]minimax[>[`（13 字符），共 15 个；
+ *  - 外层是完整闭合的 tool_call 包裹（强模式辅助，不单独触发）；
+ *  - 内含 3 个 invoke 块，其中第 3 个是**替换性损伤**原文：
+ *    `<invoke name` + 噪声 + `skill">` —— `="` 被吞掉，标签是坏的，
+ *    严禁"修好"它：正是这种残缺形态此前让伪工具检测器漏判（缺陷 5）。
+ *
+ * 校验：Buffer.byteLength === 410；噪声单元出现 15 次；
+ * sha256 = 2f4ecb50a753f13a76f5c47836b064d393585a2374d807bdecc6d86d50dd1ee4。
+ */
+export const PSEUDO_MINIMAX_PSEUDO_UNIT = "]<]minimax[>[<tool_call>\n]<]minimax[>[<invoke name=\"skill\">]<]minimax[>[<name>no-blind-wait-polling]<]minimax[>[</name>]<]minimax[>[</invoke>\n]<]minimax[>[<invoke name=\"skill\">]<]minimax[>[<name>dsh-plugin-dev-hotrules]<]minimax[>[</name>]<]minimax[>[</invoke>\n]<]minimax[>[<invoke name]<]minimax[>[skill\">]<]minimax[>[<name>dsh-plugin-dev-kb]<]minimax[>[</name>]<]minimax[>[</invoke>\n]<]minimax[>[</tool_call>";
