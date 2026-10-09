@@ -1,5 +1,43 @@
 # dsh-cot-anchor 发行说明
 
+## v0.2.0 — 内核移植段重做：三类有界预算 + 伪调用超限硬中止 + 事故语料回归
+
+### 变更（相对 0.1.6 为重做，旧 API 废弃）
+
+1. **内核移植段重做（缺陷 1 主修复）**：移植常量改为三类有界预算 `HEURISTIC_CUT_MAX=6` / `CONFIRMED_REPEAT_CUT_MAX=20` / `CONFIRMED_PSEUDO_CUT_MAX=3`（汇总对象 `SOFT_CUT_LIMITS`），turn 重置点 `softCutBudget: createSoftCutBudget()`，裁决纯函数 `decideSoftCut(budget, decision, limits)` 三分支——未达上限 `cut`、该类达上限 `reject`（静默忽略）、`confirmed-pseudo` 达上限 `hard-abort`（内核向会话发 `agent/error`，错误消息固定 `cot-anchor-budget-pseudo-abort`，中止当前 turn）。**删除 waterfall 前的廉价总闸**：配额耗尽后每个 32 字符检查点仍必达插件检测器，"检测器被询问"与"采纳与否"解耦——这是 2026-10-07 事故（6 次 churn 耗尽配额后 78,586 字符字节级复读无拦截）的直接针对性修复。决策字段 `cutClass` 更名 `budgetClass`（wire 枚举 `heuristic` / `confirmed-repeat` / `confirmed-pseudo`，缺省或未知按 heuristic）；waterfall payload 新增 `budgets` 三类快照供观测。
+2. **churn 升级与 turn 边界归零**：同 session 同 turn 第 2 次起追加升级文案（「本 turn 第 N 次空转，下一步必须是一次真实工具调用或最终结论，禁止继续分析。」），第 6 次起追加预算边界说明；计数键改为按 session 的有界 Map（LRU 32），turn 归零双路径（`assistant/message` 观察者 + 决策 `payload.turn` 就地推进）。
+3. **ToolArgsError 续步兜底强化**：post-execute 错误分支前移到 `enableToolInject` 总开关与结论抽取之前（不受总开关抑制）；错误识别兼容顶层与 info 层的 `ToolArgsError` / `INVALID_ARGS`；缺失参数名三源去重抽取（violations 引号字段 / `missing required property` 文本 / 错误消息引号字段），全空退化通用句式。
+4. **事故语料回归（新增）**：2026-10-07 事故三段语料脱敏入库 `test/fixtures/incident-20261007-{normal,repeat,transition}.txt`，`test-incident-replay.mjs` 以插件真实检测器按 32 字符节奏回放：A1+A3 拼接首次 confirmed-repeat 于 19,392 字符（period=35、count=5）、A3 单独于 4,576 字符、A6 首个 cut 为 churn(heuristic) 于 2,208 字符且 confirmed 类零命中、A1 正常段零误伤；阈值分档（<2 永不 / 2–11 需 30 次 / 12–95 需 5 次 / ≥96 需 2 次）一并锁死。
+
+### 升级后必须重跑内核移植脚本（重要）
+
+0.1.6 的旧移植段与本版锚点不兼容，直接应用会零写入退出。**先回滚再应用**：
+
+```sh
+node tools/apply-softcut-port.mjs --revert   # 回滚旧移植
+node tools/apply-softcut-port.mjs            # 应用新移植
+node tools/apply-softcut-port.mjs --check    # 确认「已应用」
+```
+
+从干净内核（从未应用过移植）直接运行第二条命令即可。脚本幂等、锚点失配会零写入退出；详见 docs/softcut-kernel-port.md「从旧版移植升级」。
+
+### 验证
+
+`node --check lib/index.js` 与补丁后内核均通过；仓库全部 **27** 个测试文件逐个运行退出码 0，其中 test-softcut-budget.mjs（内核预算纯函数时序，27 条）、test-kernel-budget.mjs（移植段源码契约 + 旧 API 零残留守卫，27 条）、test-budget-class.mjs（budgetClass 归类 + churn 升级 + ToolArgsError 兜底，35 条）、test-incident-replay.mjs（事故语料回放 + 阈值分档，29 条）。移植后内核 82,465 字节、region 标记 `DSH-SOFT-CUT-PORT`，hard-abort 固定序列（emit → abort → break）顺序断言通过。检测阈值（REPEAT_MIN_PERIOD=12、REPEAT_MIN_COUNT_SHORT=5、REPEAT_ULTRA_SHORT_MIN_COUNT=30、CHURN_MIN_HITS=18）保持冻结未动。
+
+### 兼容性
+
+0.1.0–0.1.5 插件决策缺 `budgetClass` 字段，内核按 heuristic 归类；0.1.6 的旧移植段与本版不兼容（须先 `--revert`，见上）。无新增设置项，对外注入接口向后兼容。
+
+### 安装
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.0
+# 或
+gh release download v0.2.0 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.2.0.tgz
+```
+
 ## v0.1.6 — 分类软切预算 + 工具参数错误续步兜底 + churn 锚点升级 + MiniMax 伪工具方言
 
 ### 修复

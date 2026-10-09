@@ -118,10 +118,10 @@ node tools/apply-softcut-port.mjs
 ```
 内核文件：<路径>
 已备份 → <路径>.bak-pre-softcut-port
-  ✓ A. 新增 soft-cut 常量
-  ✓ B. phase 初始化加 softCuts: 0
+  ✓ A. 新增 soft-cut 常量与分类预算纯函数
+  ✓ B. phase 初始化加 softCutBudget 分类计数
   ✓ C1. buildRequest 改用 requestSignal
-  ✓ C2. 流循环内按间隔调用 agent/soft-cut
+  ✓ C2. 流循环内按间隔调用 agent/soft-cut 并按分类预算裁决
   ✓ D1. catch 分支区分自切与真错
   ✓ D2. catch 收尾 + 软切边界落盘续跑
 ✓ 移植完成。
@@ -166,21 +166,39 @@ node tools/trace-softcut.mjs <解包后的 session.jsonl>
 
 0.1.5-rc.2 的软切机构全部位于内核 `dsh-agent-loop` 内，插件仅提供"要不要切"的判定。两者的分工是：
 
-- **插件（裁判）**：判断是否该切断，返回 `{ kind: "cut", contexts: [...] }`；
+- **插件（裁判）**：判断是否该切断，返回 `{ kind: "cut", budgetClass, contexts: [...] }`（`budgetClass` 声明请求哪类预算，见下文「分类软切预算」）；
 - **内核（剪刀）**：中断本次上游请求、把已生成部分按正常消息落盘、把上下文排入 next-step、继续本回合。
 
 所以必须把"剪刀"补回内核，插件侧无需改动。移植共 4 处，均为**纯增量**（不改动原有逻辑，只插入缺失的代码路径）：
 
 | 处 | 位置（按代码语义定位，勿按行号） | 内容 |
 | --- | --- | --- |
-| **A** | 最后一条 `import` 之后 | 3 个常量：检查间隔（32 字符）/ 尾部窗口（240 字符）/ 单轮上限（6 次） |
-| **B** | `wakeDriver()` 内 `this.setPhase({ kind: "running", … })` | 新增 `softCuts: 0` 计数 |
+| **A** | 最后一条 `import` 之后 | 检查间隔（32 字符）与尾部窗口常量；三类有界预算 `HEURISTIC_CUT_MAX=6` / `CONFIRMED_REPEAT_CUT_MAX=20` / `CONFIRMED_PSEUDO_CUT_MAX=3` 与汇总对象 `SOFT_CUT_LIMITS`；hard-abort 固定错误串 `SOFT_CUT_PSEUDO_ABORT_MESSAGE`；两个自包含纯函数 `createSoftCutBudget()` / `decideSoftCut()` |
+| **B** | `wakeDriver()` 内 `this.setPhase({ kind: "running", … })` | 新增 `softCutBudget: createSoftCutBudget()` 分类计数（每次 turn 开始归零，防跨 turn 泄漏） |
 | **C1** | `step()` 中 `firstAttempt = false;` 之后 | 声明独立的 `softCutAbort` 控制器与 `requestSignal`；`buildRequest()` 的最后一个 `signal` 实参改用 `requestSignal` |
-| **C2** | `for await (const chunk of stream)` 循环内 | 累积 `text-delta` / `reasoning-delta`；每满 32 字符调用 `agent/soft-cut` waterfall；命中即中止上游请求并跳出循环 |
+| **C2** | `for await (const chunk of stream)` 循环内 | 累积 `text-delta` / `reasoning-delta`；每满 32 字符调用 `agent/soft-cut` waterfall（payload 附 `budgets` 三类快照，**无前置总闸**——每个检查点必达插件）；返回 cut 后经 `decideSoftCut` 三分支：`cut` 中止上游请求并跳出，`reject` 继续生成，`hard-abort` 发出 `agent/error` 后中止当前 turn |
 | **D1** | `step()` 内 `catch` 开头 | 区分"自己切的"与"真出错"，避免软切被当成错误 |
 | **D2** | 紧随其后的 `try { const finish = …` 之前 | 软切边界：前缀按**正常** `assistant/message` 落盘（不带 `interrupted` 标记）、按 `trimTo` 裁掉重复尾巴、把上下文排入 next-step 让回合续跑 |
 
 C1 是最关键的一处：它让中断**只作用于当前这一次上游请求**，而不是整个 turn——这正是"切一刀后继续"与"整轮急停"的区别。
+
+### 分类软切预算（0.2.0 起）
+
+每 turn 三类独立计数、互不挤占，全部有界：
+
+| 类别（wire 枚举） | 预算键（驼峰） | 上限/turn | 覆盖触发 |
+| --- | --- | --- | --- |
+| `heuristic` | `heuristic` | 6 | churn（语义空转）、transition（转折句）等启发式判定 |
+| `confirmed-repeat` | `confirmedRepeat` | 20 | repeat（字节级复读）、numberRunaway（递增数字流） |
+| `confirmed-pseudo` | `confirmedPseudo` | 3 | pseudoTool（文本化伪工具调用） |
+
+裁决规则（内核侧纯函数 `decideSoftCut`，输入 `budgetClass` 与该类余量）：
+
+- 该类计数未达上限 → `cut`：正常软切，计数 +1；
+- 该类已达上限 → `reject`：该类后续决策被**静默忽略**（流继续、不裁尾、不注入）；
+- `confirmed-pseudo` 已达上限 → **`hard-abort`**：内核向会话发出 `agent/error`（错误消息固定为 `cot-anchor-budget-pseudo-abort`）并中止当前 turn。理由：伪调用误报的"cut→新 step→再误报"自我循环会让 turn 永不可完成，与其无限软切不如硬停让用户介入。
+
+兼容口径：插件决策**缺少** `budgetClass` 字段（0.1.5 及更早版本的插件）或取值未知时，一律按 `heuristic` 归类。waterfall payload 的 `budgets` 字段仅作观测快照，不参与裁决。
 
 移植依赖的 6 项内核能力在新版中均已存在，属纯增量，不需要额外安装依赖：`interruptedBlocks()`、`inbox.splice()`、`AssistantStreamAttempt`、`live.settle()`、`createAssistantMessage`、`AbortSignal.any`。
 
@@ -208,6 +226,18 @@ node tools/apply-softcut-port.mjs --revert
 
 若备份不存在（说明从未在本机应用过移植），无需回滚。
 
+### 从旧版移植升级（0.1.6 及更早应用过单闸版移植）
+
+旧版移植（`softCuts` 单计数、`MAX_SOFT_CUTS_PER_TURN` 总闸）的改写产物与新锚点不兼容，直接应用会因锚点失配**零写入退出**。升级路径：
+
+```sh
+node tools/apply-softcut-port.mjs --revert   # 还原旧移植（读 .bak-pre-softcut-port 备份）
+node tools/apply-softcut-port.mjs            # 应用新版移植（重新备份后写入）
+node tools/apply-softcut-port.mjs --check    # 确认「已应用」
+```
+
+若 `--revert` 报备份不存在而内核源码里仍有旧移植痕迹，说明备份曾被覆盖——此时先重装 DSH（恢复 pristine 内核）再执行新版移植。
+
 ## 六、排障
 
 | 现象 | 原因与处理 |
@@ -221,7 +251,7 @@ node tools/apply-softcut-port.mjs --revert
 ## 七、已知限制
 
 - 软切是**尽力而为**的启发式机制，判定基于字符串特征，不理解语义。正常思考中出现转折句也可能被切断（代价较低：模型从断点继续，不会丢失工作）。
-- 单个回合最多软切 6 次，防止话多的模型把回合切成碎片。
+- 单个回合每类软切各有上限且全部有界：启发式 6 次、确证复读 20 次、伪工具 3 次；启发式与确证复读超限后该类被静默忽略，伪工具超限升级为硬中止（见「分类软切预算」）。
 - 本插件**不会中止进行中的回合**。它只在模型自己写坏输出时切断当前这一次生成请求，随后继续。若你看到回合被整体取消，那不是本插件的行为。
 - 补丁不修复其它因内核升级而失效的能力。本插件的结论注入与设置页在所有版本均可用。
 - 移植脚本按 DSH 0.1.5-rc.2 的实现写就，面向 0.1.5-rc.3 至 0.2.x。更新到更高版本后可能需要按新排版调整锚点。

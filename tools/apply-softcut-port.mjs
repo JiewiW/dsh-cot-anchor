@@ -27,30 +27,47 @@
  * 1. 改写前逐个校验替换锚点在目标文件中**恰好出现一次**；任一不匹配即整体中止，
  *    不写入任何内容（内核文件被改坏会导致 DSH 无法启动）。
  * 2. 首次改写自动创建 `<file>.bak-pre-softcut-port`，`--revert` 读它还原。
+ *    重应用流程必须 revert-first：先 `--revert`（此时 `--check` 须为退出码 1、
+ *    内核无 marker），再应用本脚本；在含旧 marker 的内核上直接 apply 会被幂等
+ *    短路 exit 0 但零改写（假成功）。
  * 3. 改写内容以注释标记 `DSH-SOFT-CUT-PORT` 标识，可随时用 `--check` 确认状态。
  *
- * ## 移植的 4 处改动
+ * ## 移植的 6 处改动
  *
  * | 处 | 位置（按代码语义定位，勿按行号） | 内容 |
  * | --- | --- | --- |
- * | A | 最后一条 import 之后 | 检查间隔/尾部窗口常量；分类软切预算 4 常量（heuristic 6 / confirmed-repeat 20 / pseudoTool 3 / total 29）与 3 个模块顶层纯函数（softCutBudgetKey / shouldShortCircuitSoftCut / decideSoftCutBudget） |
- * | B | `wakeDriver()` 的 `setPhase({kind:"running",…})` | 新增 `softCutBudget` 分类计数对象 `{heuristic,confirmedRepeat,pseudoTool,total}`（turn 重置点） |
+ * | A | 最后一条 import 之后 | 检查间隔/尾部窗口常量；三类有界预算常量 HEURISTIC_CUT_MAX=6 / CONFIRMED_REPEAT_CUT_MAX=20 / CONFIRMED_PSEUDO_CUT_MAX=3；hard-abort 固定错误串常量；limits 常量对象；2 个自包含纯函数 createSoftCutBudget / decideSoftCut |
+ * | B | `wakeDriver()` 的 `setPhase({kind:"running",…})` | 新增 `softCutBudget: createSoftCutBudget()`（turn 重置点，防跨 turn 泄漏） |
  * | C1 | `step()` 中 `firstAttempt = false;` 之后 | 独立 `softCutAbort` + `requestSignal`；`buildRequest()` 末参改用它 |
- * | C2 | `for await (const chunk of stream)` 循环内 | 累积可见文本，按间隔调用 `agent/soft-cut` waterfall（payload 带 sessionId）；先过 total 总闸，返回 cut 后按 cutClass 分类判定 take/ignore，take 才中止上游请求 |
+ * | C2 | `for await (const chunk of stream)` 循环内 | 累积可见文本，按间隔调用 `agent/soft-cut` waterfall（payload 带 sessionId 与 budgets 快照）；无 waterfall 前总闸；返回 cut 后经 decideSoftCut 三分支：cut 才中止上游请求，reject 继续生成，hard-abort 走固定中止序列 |
  * | D1 | `step()` 内 `catch` 开头 | 区分"自己切的"与"真出错" |
  * | D2 | 紧随其后的 `try { const finish = …` 之前 | 软切边界：前缀按正常消息落盘 + 裁掉重复尾巴 + 续跑 |
  *
- * ## 预算语义（2026-10-07 缺陷 1 修复）
+ * ## 预算语义（2026-10-07 软切配额耗尽事故修复）
  *
- * 软切按 cutClass 分三类独立计数：confirmed-repeat（repeat/numberRunaway，字节级
- * 确证）20 次/turn；heuristic（churn/transition，启发式）6 次/turn；pseudoTool
- * （伪工具文本，有误报面）3 次/turn。waterfall 前有 total>=29 廉价总闸；某类超限
- * 后该类决策被静默忽略（流继续，不 abort、不裁尾、不注入），不做硬 abort。
+ * 软切按 budgetClass 分三类独立有界预算：confirmed-repeat（repeat/numberRunaway，
+ * 字节级确证、近零误报）20 次/turn；heuristic（churn/transition，启发式、误报面
+ * 大）6 次/turn；confirmed-pseudo（伪工具文本，对合法文本中的工具格式示例有误报
+ * 面）3 次/turn。waterfall 前不设总闸，每次间隔检查都征询插件；payload 携带三类
+ * 预算快照（budgets）。decideSoftCut 返回三态：
+ *
+ * - `cut`：该类 used < max，写回 usedAfter 后按既有软切路径中止本次上游请求；
+ * - `reject`：heuristic / confirmed-repeat 该类已达上限，不切、流继续生成；
+ * - `hard-abort`：confirmed-pseudo 达上限（对合法文本的工具格式示例误报面必须
+ *   收敛为硬边界），执行固定中止序列——先 emit `agent/error`（错误串
+ *   `cot-anchor-budget-pseudo-abort`），再 `phase.abort.abort()`（turn 主控制器），
+ *   然后 break 出流循环。三类均无无限配额。
+ *
+ * budgetClass 归一化枚举（wire 格式，与插件 decision.budgetClass 同一口径）：
+ * `"heuristic" | "confirmed-repeat" | "confirmed-pseudo"`；缺失或未知取值一律按
+ * heuristic 处理（旧插件不返回该字段 = 旧行为）。预算计数对象的键与 waterfall
+ * payload 的 budgets 键为驼峰（heuristic / confirmedRepeat / confirmedPseudo）。
  *
  * ## 依赖的内核能力（移植为纯增量，不新增依赖）
  *
  * `interruptedBlocks()`、`inbox.splice()`、`AssistantStreamAttempt`、`live.settle()`、
- * `createAssistantMessage`、`AbortSignal.any`。
+ * `createAssistantMessage`、`AbortSignal.any`、`dispatch.emit("agent/error",…)`、
+ * `phase.abort.abort()`。
  *
  * @module tools/apply-softcut-port
  */
@@ -164,7 +181,7 @@ if (applied) {
 // ---------------------------------------------------------------------------
 const edits = [
 	{
-		name: "A. 新增 soft-cut 常量",
+		name: "A. 新增 soft-cut 常量与分类预算纯函数",
 		from: 'import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER } from "@deepseek-ai/dsh-tools";\n',
 		to:
 			'import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER } from "@deepseek-ai/dsh-tools";\n' +
@@ -176,60 +193,58 @@ const edits = [
 			"const SOFT_CUT_CHECK_INTERVAL_CHARS = 32;\n" +
 			"/** 交给 soft-cut 监听器的尾部可见字符数。 */\n" +
 			"const SOFT_CUT_TAIL_CHARS = 240;\n" +
-			"// 分类软切预算（缺陷 1 修复，2026-10-07）：按 cutClass 分三类独立计数，\n" +
-			"// 取代旧的单一 MAX_SOFT_CUTS_PER_TURN=6。\n" +
-			"/** heuristic 类（churn/transition，启发式、有误报余量）每 turn 上限。 */\n" +
-			"const BUDGET_HEURISTIC = 6;\n" +
-			"/** confirmed-repeat 类（repeat/numberRunaway，字节级确证、近乎零误报）每 turn 上限。 */\n" +
-			"const BUDGET_CONFIRMED_REPEAT = 20;\n" +
-			"/** pseudoTool 类（伪工具文本，存在误报面）每 turn 上限。 */\n" +
-			"const BUDGET_PSEUDO_TOOL = 3;\n" +
+			"// 分类软切预算（2026-10-07 软切配额耗尽事故修复）：旧版单一上限被 churn\n" +
+			"// 类启发式决策耗尽后，字节级复读（confirmed-repeat）失去拦截配额。三类按\n" +
+			"// 误报面差异独立配额：churn/transition 是启发式、误报面大；repeat/numberRunaway\n" +
+			"// 字节级确证、近零误报；pseudoTool 对合法文本中的工具格式示例存在误报面。\n" +
+			"/** heuristic 类（churn/transition，启发式、误报面大）每 turn 上限。 */\n" +
+			"const HEURISTIC_CUT_MAX = 6;\n" +
+			"/** confirmed-repeat 类（repeat/numberRunaway，字节级确证、近零误报）每 turn 上限。 */\n" +
+			"const CONFIRMED_REPEAT_CUT_MAX = 20;\n" +
+			"/** confirmed-pseudo 类（伪工具文本，对工具格式示例有误报面）每 turn 上限。 */\n" +
+			"const CONFIRMED_PSEUDO_CUT_MAX = 3;\n" +
+			"/** confirmed-pseudo 预算耗尽硬中止的固定错误串（插件契约值，不可改）。 */\n" +
+			'const SOFT_CUT_PSEUDO_ABORT_MESSAGE = "cot-anchor-budget-pseudo-abort";\n' +
+			"/** 三类预算上限表（键 = 预算计数对象键，驼峰）；decideSoftCut 与 waterfall payload 共用。 */\n" +
+			"const SOFT_CUT_LIMITS = {\n" +
+			"\theuristic: HEURISTIC_CUT_MAX,\n" +
+			"\tconfirmedRepeat: CONFIRMED_REPEAT_CUT_MAX,\n" +
+			"\tconfirmedPseudo: CONFIRMED_PSEUDO_CUT_MAX\n" +
+			"};\n" +
 			"/**\n" +
-			" * waterfall 前的廉价总闸 = 三类预算之和。在 6/20/3 分配下，total 达到 29\n" +
-			" * 时任一类必已达其类上限（抽屉原理），故可在调用插件前直接 continue。\n" +
-			" * 调大任一类预算时必须同步重算本值。\n" +
-			" * 可达性口径：heuristic 超限发生在第 7 次（此时 total=6）、confirmed-repeat\n" +
-			" * 超限发生在第 21 次（此时 total=26），二者 total 均 < 29，真实走 waterfall\n" +
-			" * 后的 ignore 分支；pseudoTool 超限（第 4 次）恰与 total=29 同时发生，真实\n" +
-			" * 流程在 waterfall 前即被本总闸 continue，decideSoftCutBudget 对该态的\n" +
-			" * ignore 仅作纯函数防御性分支保留（不代表线上可达路径）。\n" +
+			" * 新建一个归零的分类软切预算计数对象（turn 起始调用一次，防跨 turn 泄漏）。\n" +
+			" * 纯函数：不引用 this/内核类/模块级可变状态。\n" +
+			" * @returns {{heuristic:number, confirmedRepeat:number, confirmedPseudo:number}}\n" +
 			" */\n" +
-			"const BUDGET_TOTAL = BUDGET_HEURISTIC + BUDGET_CONFIRMED_REPEAT + BUDGET_PSEUDO_TOOL;\n" +
-			"/**\n" +
-			" * 把插件返回的 cutClass 映射到分类计数桶键。cutClass 缺省（undefined，\n" +
-			" * 旧插件不返回该字段）一律按 heuristic 处理——缺省不漏判，只占启发式额度。\n" +
-			" * 纯函数：不引用 this/ctx/dispatch/任何 import。\n" +
-			" * @param {string|undefined} cutClass\n" +
-			" * @returns {\"heuristic\"|\"confirmedRepeat\"|\"pseudoTool\"}\n" +
-			" */\n" +
-			"function softCutBudgetKey(cutClass) {\n" +
-			'\tif (cutClass === "confirmed-repeat") return "confirmedRepeat";\n' +
-			'\tif (cutClass === "pseudoTool") return "pseudoTool";\n' +
-			'\treturn "heuristic";\n' +
+			"function createSoftCutBudget() {\n" +
+			"\treturn { heuristic: 0, confirmedRepeat: 0, confirmedPseudo: 0 };\n" +
 			"}\n" +
 			"/**\n" +
-			" * waterfall 之前的廉价总闸：total 已达 BUDGET_TOTAL 时不再询问插件。\n" +
-			" * 纯函数：只读 state.total。\n" +
-			" * @param {{total:number}} state\n" +
-			" * @returns {boolean}\n" +
+			" * 分类预算判定。完全自包含纯函数：不引用 this/内核类/其他函数/模块级常量，\n" +
+			" * 仅做状态运算；不修改入参之外的任何外部状态（写回计数由调用点完成）。\n" +
+			" *\n" +
+			" * decision.budgetClass 归一化枚举：\"heuristic\" | \"confirmed-repeat\" |\n" +
+			" * \"confirmed-pseudo\"；缺失（旧插件）或未知取值一律视同 \"heuristic\"。\n" +
+			" * budget 键与 limits 键为驼峰（heuristic/confirmedRepeat/confirmedPseudo）。\n" +
+			" *\n" +
+			" * @param {{heuristic:number, confirmedRepeat:number, confirmedPseudo:number}} budget 分类计数\n" +
+			" * @param {{budgetClass?:string}} decision 插件软切决策（kind===\"cut\" 已由调用点保证）\n" +
+			" * @param {{heuristic:number, confirmedRepeat:number, confirmedPseudo:number}} limits 三类上限\n" +
+			" * @returns {{action:\"cut\", budgetClass:string, usedAfter:number}|{action:\"reject\", budgetClass:string, usedAfter:number}|{action:\"hard-abort\", budgetClass:\"confirmed-pseudo\"}}\n" +
 			" */\n" +
-			"function shouldShortCircuitSoftCut(state) {\n" +
-			"\treturn state.total >= BUDGET_TOTAL;\n" +
-			"}\n" +
-			"/**\n" +
-			" * waterfall 返回 cut 后的分类预算判定。该类计数已达类上限 → \"ignore\"\n" +
-			" *（静默放行：不 abort、不裁尾、不注入，流继续）；否则 \"take\"。\n" +
-			" * 不读取 total——调用点保证此刻 total < BUDGET_TOTAL（总闸未拦）。\n" +
-			" * 纯函数：不引用 this/ctx/dispatch/任何 import。\n" +
-			" * @param {{heuristic:number, confirmedRepeat:number, pseudoTool:number, total:number}} state\n" +
-			" * @param {string|undefined} cutClass\n" +
-			" * @returns {\"take\"|\"ignore\"}\n" +
-			" */\n" +
-			"function decideSoftCutBudget(state, cutClass) {\n" +
-			"\tconst key = softCutBudgetKey(cutClass);\n" +
-			"\tconst limit = key === \"confirmedRepeat\" ? BUDGET_CONFIRMED_REPEAT\n" +
-			"\t\t: key === \"pseudoTool\" ? BUDGET_PSEUDO_TOOL : BUDGET_HEURISTIC;\n" +
-			"\treturn state[key] >= limit ? \"ignore\" : \"take\";\n" +
+			"function decideSoftCut(budget, decision, limits) {\n" +
+			'\tconst requested = typeof decision?.budgetClass === "string" ? decision.budgetClass : "";\n' +
+			'\tconst key = requested === "confirmed-repeat" ? "confirmedRepeat"\n' +
+			'\t\t: requested === "confirmed-pseudo" ? "confirmedPseudo" : "heuristic";\n' +
+			'\tconst wireClass = key === "confirmedRepeat" ? "confirmed-repeat"\n' +
+			'\t\t: key === "confirmedPseudo" ? "confirmed-pseudo" : "heuristic";\n' +
+			"\tconst used = budget[key] ?? 0;\n" +
+			"\tconst max = limits[key];\n" +
+			"\tif (used < max) {\n" +
+			'\t\treturn { action: "cut", budgetClass: wireClass, usedAfter: used + 1 };\n' +
+			"\t}\n" +
+			'\tif (key === "confirmedPseudo") return { action: "hard-abort", budgetClass: "confirmed-pseudo" };\n' +
+			'\treturn { action: "reject", budgetClass: wireClass, usedAfter: used };\n' +
 			"}\n" +
 			`//#endregion ${MARKER}\n`
 	},
@@ -249,8 +264,9 @@ const edits = [
 			"\t\t\tabort: new AbortController(),\n" +
 			"\t\t\tturn: this.phase.lastTurn,\n" +
 			"\t\t\tstep: 0,\n" +
-			`\t\t\t// ${MARKER}：本 turn 软切分类计数（turn 重置点；setPhase running 时归零）。\n` +
-			"\t\t\tsoftCutBudget: { heuristic: 0, confirmedRepeat: 0, pseudoTool: 0, total: 0 },\n" +
+			`\t\t\t// ${MARKER}：本 turn 软切分类预算（turn 重置点；setPhase running 时归零，\n` +
+			"\t\t\t// 防止计数跨 turn 泄漏）。\n" +
+			"\t\t\tsoftCutBudget: createSoftCutBudget(),\n" +
 			"\t\t\twakeRequested: false\n" +
 			"\t\t});\n"
 	},
@@ -277,7 +293,7 @@ const edits = [
 			"\t\t\t}, startsRequestSeries, requestSignal);\n"
 	},
 	{
-		name: "C2. 流循环内按间隔调用 agent/soft-cut",
+		name: "C2. 流循环内按间隔调用 agent/soft-cut 并按分类预算裁决",
 		from:
 			"\t\t\t\tfor await (const chunk of stream) {\n" +
 			"\t\t\t\t\tsignal.throwIfAborted();\n" +
@@ -295,9 +311,9 @@ const edits = [
 			"\t\t\t\t\tif (newCharsSinceCheck < SOFT_CUT_CHECK_INTERVAL_CHARS) continue;\n" +
 			"\t\t\t\t\tnewCharsSinceCheck = 0;\n" +
 			"\t\t\t\t\tconst budgetState = this.phase.softCutBudget\n" +
-			"\t\t\t\t\t\t?? (this.phase.softCutBudget = { heuristic: 0, confirmedRepeat: 0, pseudoTool: 0, total: 0 });\n" +
-			"\t\t\t\t\t// waterfall 前的廉价总闸：三类额度之和已满则不再询问插件。\n" +
-			"\t\t\t\t\tif (shouldShortCircuitSoftCut(budgetState)) continue;\n" +
+			"\t\t\t\t\t\t?? (this.phase.softCutBudget = createSoftCutBudget());\n" +
+			"\t\t\t\t\t// 无 waterfall 前总闸：每次间隔检查都征询插件，预算裁决统一由\n" +
+			"\t\t\t\t\t// decideSoftCut 在收到 cut 决策后进行。\n" +
 			"\t\t\t\t\tlet cutDecision = null;\n" +
 			"\t\t\t\t\ttry {\n" +
 			'\t\t\t\t\t\tcutDecision = await this.dispatch.waterfall("agent/soft-cut", {\n' +
@@ -307,6 +323,11 @@ const edits = [
 			"\t\t\t\t\t\t\tvisibleLength: visibleText.length,\n" +
 			"\t\t\t\t\t\t\ttail: visibleText.slice(-SOFT_CUT_TAIL_CHARS),\n" +
 			"\t\t\t\t\t\t\tfullVisibleText: visibleText,\n" +
+			"\t\t\t\t\t\t\tbudgets: {\n" +
+			"\t\t\t\t\t\t\t\theuristic: { used: budgetState.heuristic, max: SOFT_CUT_LIMITS.heuristic },\n" +
+			"\t\t\t\t\t\t\t\tconfirmedRepeat: { used: budgetState.confirmedRepeat, max: SOFT_CUT_LIMITS.confirmedRepeat },\n" +
+			"\t\t\t\t\t\t\t\tconfirmedPseudo: { used: budgetState.confirmedPseudo, max: SOFT_CUT_LIMITS.confirmedPseudo }\n" +
+			"\t\t\t\t\t\t\t},\n" +
 			"\t\t\t\t\t\t\tsignal: requestSignal\n" +
 			"\t\t\t\t\t\t}, () => Promise.resolve(null));\n" +
 			"\t\t\t\t\t} catch {\n" +
@@ -315,13 +336,20 @@ const edits = [
 			"\t\t\t\t\t\tcutDecision = null;\n" +
 			"\t\t\t\t\t}\n" +
 			'\t\t\t\t\tif (cutDecision?.kind !== "cut" || !Array.isArray(cutDecision.contexts) || cutDecision.contexts.length === 0) continue;\n' +
-			"\t\t\t\t\t// 分类预算判定：该类已达上限则静默忽略本次软切决策（流继续，\n" +
-			"\t\t\t\t\t// 不赋值 softCutDecision、不 abort、不裁尾、不 splice）。\n" +
-			"\t\t\t\t\tconst budgetKey = softCutBudgetKey(cutDecision.cutClass);\n" +
-			'\t\t\t\t\tif (decideSoftCutBudget(budgetState, cutDecision.cutClass) === "ignore") continue;\n' +
+			"\t\t\t\t\t// 分类预算三分支裁决：cut 才切，reject 继续生成，hard-abort 走\n" +
+			"\t\t\t\t\t// 固定中止序列（先广播错误，再中止 turn 主控制器）。\n" +
+			"\t\t\t\t\tconst budgetVerdict = decideSoftCut(budgetState, cutDecision, SOFT_CUT_LIMITS);\n" +
+			'\t\t\t\t\tif (budgetVerdict.action === "reject") continue;\n' +
+			'\t\t\t\t\tif (budgetVerdict.action === "hard-abort") {\n' +
+			"\t\t\t\t\t\tthis.dispatch.emit(\"agent/error\", { error: new Error(SOFT_CUT_PSEUDO_ABORT_MESSAGE) });\n" +
+			"\t\t\t\t\t\tthis.phase.abort.abort(new Error(SOFT_CUT_PSEUDO_ABORT_MESSAGE));\n" +
+			"\t\t\t\t\t\tbreak;\n" +
+			"\t\t\t\t\t}\n" +
+			"\t\t\t\t\t// action === \"cut\"：按裁决结果写回分类计数，走既有软切路径。\n" +
+			'\t\t\t\t\tconst budgetKey = budgetVerdict.budgetClass === "confirmed-repeat" ? "confirmedRepeat"\n' +
+			'\t\t\t\t\t\t: budgetVerdict.budgetClass === "confirmed-pseudo" ? "confirmedPseudo" : "heuristic";\n' +
+			"\t\t\t\t\tbudgetState[budgetKey] = budgetVerdict.usedAfter;\n" +
 			"\t\t\t\t\tsoftCutDecision = cutDecision;\n" +
-			"\t\t\t\t\tbudgetState[budgetKey] += 1;\n" +
-			"\t\t\t\t\tbudgetState.total += 1;\n" +
 			"\t\t\t\t\tsoftCutAbort.abort();\n" +
 			"\t\t\t\t\tbreak;\n" +
 			"\t\t\t\t}\n" +

@@ -1,11 +1,17 @@
 /**
- * S4.3 内核分类预算 —— 直接驱动移植段纯函数状态机判定。
+ * 内核三类有界预算 —— 集成级断言（对已应用补丁的真实内核文件）。
  *
- * 剥载方式沿用 test-softcut-fix.mjs：从补丁后内核 lib/index.js 取出由
- * tools/apply-softcut-port.mjs 注入的 DSH-SOFT-CUT-PORT region（常量 + 纯函数就在
- * 该 region 内），new Function 动态执行后取两个纯函数与四个常量，做时序判定。
- * 禁止用源码字符串/AST 静态断言替代——这里全部是真实函数调用。
- * 内核路径经 createRequire 解析（与移植脚本同一解析口径），不写死内容哈希。
+ * 与 test-softcut-budget.mjs 的分工：那边只测移植段纯函数的时序语义（27 断言）；
+ * 本文件验证**内核接线**——补丁已应用到 dsh-agent-loop、A 段常量与 SOFT_CUT_LIMITS
+ * 取值、B 段 turn 重置点、C2 payload 的 budgets 三键（驼峰）schema、D2 写回映射
+ * （wire 连字符 → 驼峰键）、hard-abort 固定序列（emit → abort → break）的顺序，
+ * 以及旧 API（shouldShortCircuitSoftCut/decideSoftCutBudget/BUDGET_*）已从内核
+ * 完全清除。最后用纯函数跑一条内核同构的混合序列（6 heuristic + 20 repeat +
+ * 3 pseudo 交错）做端到端预算收口。
+ *
+ * 内核路径经 createRequire 解析（与移植脚本同一口径），region 按
+ * DSH-SOFT-CUT-PORT 标记切片后 new Function 动态执行——全部为真实函数调用，
+ * 禁止用源码字符串断言替代可执行验证（结构性接线检查除外，已逐条标注）。
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -13,99 +19,124 @@ import { createRequire } from "node:module";
 const kernelPath = createRequire(import.meta.url).resolve("@deepseek-ai/dsh-agent-loop");
 const source = readFileSync(kernelPath, "utf8");
 
+let failed = 0;
+function check(label, condition, extra) {
+	const ok = Boolean(condition);
+	console.log(`${ok ? "PASS" : "FAIL"} ${label}${extra === undefined ? "" : ` → ${extra}`}`);
+	if (!ok) failed += 1;
+}
+
+// --- ① 补丁已应用状态 --------------------------------------------------------
 const REGION_BEGIN = "//#region DSH-SOFT-CUT-PORT";
 const REGION_END = "//#endregion DSH-SOFT-CUT-PORT";
 const begin = source.indexOf(REGION_BEGIN);
 const end = source.indexOf(REGION_END);
+check("内核含 DSH-SOFT-CUT-PORT 起止标记", begin >= 0 && end > begin, `begin=${begin} end=${end}`);
 if (begin < 0 || end < 0) {
-	console.error("FAIL 内核未处于 soft-cut 已移植状态（找不到 DSH-SOFT-CUT-PORT region）");
+	console.error("FAIL 内核未处于 soft-cut 已移植状态，终止（先跑 node tools/apply-softcut-port.mjs）");
 	process.exit(1);
 }
 // region 末尾是行注释，return 前必须换行，否则会被注释吞掉。
 const region = source.slice(begin, end + REGION_END.length) + "\n";
 const factory = new Function(
-	region + "return { shouldShortCircuitSoftCut, decideSoftCutBudget, "
-	+ "BUDGET_HEURISTIC, BUDGET_CONFIRMED_REPEAT, BUDGET_PSEUDO_TOOL, BUDGET_TOTAL };"
+	region + "return { createSoftCutBudget, decideSoftCut, SOFT_CUT_LIMITS, "
+	+ "HEURISTIC_CUT_MAX, CONFIRMED_REPEAT_CUT_MAX, CONFIRMED_PSEUDO_CUT_MAX, "
+	+ "SOFT_CUT_PSEUDO_ABORT_MESSAGE };"
 );
 const {
-	shouldShortCircuitSoftCut,
-	decideSoftCutBudget,
-	BUDGET_HEURISTIC,
-	BUDGET_CONFIRMED_REPEAT,
-	BUDGET_PSEUDO_TOOL,
-	BUDGET_TOTAL
+	createSoftCutBudget,
+	decideSoftCut,
+	SOFT_CUT_LIMITS,
+	HEURISTIC_CUT_MAX,
+	CONFIRMED_REPEAT_CUT_MAX,
+	CONFIRMED_PSEUDO_CUT_MAX,
+	SOFT_CUT_PSEUDO_ABORT_MESSAGE
 } = factory();
 
-let failed = 0;
-function check(label, actual, expected) {
-	const ok = actual === expected;
-	console.log(`${ok ? "PASS" : "FAIL"} ${label} → ${actual}（期望 ${expected}）`);
-	if (!ok) failed += 1;
-}
-function freshState() {
-	return { heuristic: 0, confirmedRepeat: 0, pseudoTool: 0, total: 0 };
-}
+// --- ② 常量与预算表取值（规格冻结值，禁止漂移） ------------------------------
+check("HEURISTIC_CUT_MAX=6", HEURISTIC_CUT_MAX === 6, String(HEURISTIC_CUT_MAX));
+check("CONFIRMED_REPEAT_CUT_MAX=20", CONFIRMED_REPEAT_CUT_MAX === 20, String(CONFIRMED_REPEAT_CUT_MAX));
+check("CONFIRMED_PSEUDO_CUT_MAX=3", CONFIRMED_PSEUDO_CUT_MAX === 3, String(CONFIRMED_PSEUDO_CUT_MAX));
+check("hard-abort 消息串", SOFT_CUT_PSEUDO_ABORT_MESSAGE, "cot-anchor-budget-pseudo-abort");
+// SOFT_CUT_LIMITS 为扁平数值表（C2 payload 的 max 直接取该数值），驼峰键。
+check("SOFT_CUT_LIMITS.heuristic=6", SOFT_CUT_LIMITS?.heuristic === 6, JSON.stringify(SOFT_CUT_LIMITS));
+check("SOFT_CUT_LIMITS.confirmedRepeat=20", SOFT_CUT_LIMITS?.confirmedRepeat === 20, String(SOFT_CUT_LIMITS?.confirmedRepeat));
+check("SOFT_CUT_LIMITS.confirmedPseudo=3", SOFT_CUT_LIMITS?.confirmedPseudo === 3, String(SOFT_CUT_LIMITS?.confirmedPseudo));
 
-// --- 常量断言（不计入 10+3 项时序） -----------------------------------------
-check("BUDGET_HEURISTIC=6", BUDGET_HEURISTIC, 6);
-check("BUDGET_CONFIRMED_REPEAT=20", BUDGET_CONFIRMED_REPEAT, 20);
-check("BUDGET_PSEUDO_TOOL=3", BUDGET_PSEUDO_TOOL, 3);
-check("BUDGET_TOTAL=29", BUDGET_TOTAL, 29);
+// --- ③ 纯函数性：createSoftCutBudget 每次返回独立零态 ------------------------
+const budgetA = createSoftCutBudget();
+const budgetB = createSoftCutBudget();
+check("初态三键全零（驼峰）",
+	budgetA.heuristic === 0 && budgetA.confirmedRepeat === 0 && budgetA.confirmedPseudo === 0,
+	JSON.stringify(budgetA));
+budgetA.heuristic = 99;
+check("两次调用返回独立对象（互不影响）", budgetB.heuristic === 0, JSON.stringify(budgetB));
 
-// --- decideSoftCutBudget：从 0 计数按序推演（10 项） ------------------------
-// heuristic 第 1..6 次 take、第 7 次 ignore（此时 total=6）。
-let s = freshState();
+// --- ④ 内核接线（结构性检查：锚定已应用源码的精确形态） ----------------------
+check("B 段 turn 重置点 softCutBudget: createSoftCutBudget()",
+	source.includes("softCutBudget: createSoftCutBudget()"));
+check("C2 payload budgets 三键之 heuristic",
+	source.includes("heuristic: { used: budgetState.heuristic, max: SOFT_CUT_LIMITS.heuristic }"));
+check("C2 payload budgets 三键之 confirmedRepeat",
+	source.includes("confirmedRepeat: { used: budgetState.confirmedRepeat, max: SOFT_CUT_LIMITS.confirmedRepeat }"));
+check("C2 payload budgets 三键之 confirmedPseudo",
+	source.includes("confirmedPseudo: { used: budgetState.confirmedPseudo, max: SOFT_CUT_LIMITS.confirmedPseudo }"));
+check("D2 写回 budgetState[budgetKey] = budgetVerdict.usedAfter",
+	source.includes("budgetState[budgetKey] = budgetVerdict.usedAfter"));
+check("D2 budgetKey 映射 confirmed-repeat → confirmedRepeat",
+	/budgetKey\s*=\s*budgetVerdict\.budgetClass\s*===\s*"confirmed-repeat"\s*\?\s*"confirmedRepeat"/.test(source));
+check("D2 budgetKey 映射 confirmed-pseudo → confirmedPseudo",
+	/"confirmed-pseudo"\s*\?\s*"confirmedPseudo"/.test(source));
+
+// hard-abort 固定序列：emit("agent/error") → phase.abort.abort() → break，顺序不可换。
+const emitIdx = source.indexOf('dispatch.emit("agent/error", { error: new Error(SOFT_CUT_PSEUDO_ABORT_MESSAGE) })');
+const abortIdx = source.indexOf("this.phase.abort.abort(new Error(SOFT_CUT_PSEUDO_ABORT_MESSAGE))");
+const breakAfterAbortIdx = abortIdx >= 0 ? source.indexOf("break;", abortIdx) : -1;
+check("hard-abort：emit(agent/error) 存在", emitIdx >= 0);
+check("hard-abort：phase.abort.abort 存在", abortIdx >= 0);
+check("hard-abort：emit 先于 abort 先于 break", emitIdx >= 0 && abortIdx > emitIdx && breakAfterAbortIdx > abortIdx,
+	`emit=${emitIdx} abort=${abortIdx} break=${breakAfterAbortIdx}`);
+
+// 旧 API 清除守卫：0.1.6 的旧标识符不得残留在内核任何位置。
+check("旧 API shouldShortCircuitSoftCut 已清除", !source.includes("shouldShortCircuitSoftCut"));
+check("旧 API decideSoftCutBudget 已清除", !source.includes("decideSoftCutBudget"));
+check("旧 API BUDGET_* 常量已清除", !source.includes("BUDGET_"));
+
+// --- ⑤ 内核同构混合序列端到端（真实函数调用） --------------------------------
+// 模拟内核 C2 判定循环：decideSoftCut 裁决 + 采纳后写回（与 D2 同构）。
+// 一条流内交错耗尽三类预算，验证各桶独立计数、互不挤占。
+const budget = createSoftCutBudget();
+const applyVerdict = (verdict) => {
+	if (verdict.action !== "cut") return verdict;
+	const camelKey = verdict.budgetClass === "confirmed-repeat" ? "confirmedRepeat"
+		: verdict.budgetClass === "confirmed-pseudo" ? "confirmedPseudo" : "heuristic";
+	budget[camelKey] = verdict.usedAfter;
+	return verdict;
+};
+let mixedOk = true;
 for (let i = 1; i <= 6; i++) {
-	check(`heuristic 第 ${i} 次 take`, decideSoftCutBudget(s, "heuristic"), "take");
-	s.heuristic += 1; s.total += 1; // 仅 take 时调用点才会真的 +1，这里模拟采纳
+	const v = applyVerdict(decideSoftCut(budget, { budgetClass: "heuristic" }, SOFT_CUT_LIMITS));
+	if (v.action !== "cut") { mixedOk = false; console.log(`  heuristic 第 ${i} 次意外 ${v.action}`); }
 }
-check("heuristic 第 7 次 ignore（total=6）", (() => {
-	const r = decideSoftCutBudget(s, "heuristic");
-	return r;
-})(), "ignore");
-check("heuristic 超限时 total 确为 6", s.total, 6);
+const h7 = decideSoftCut(budget, { budgetClass: "heuristic" }, SOFT_CUT_LIMITS);
+check("混合流：heuristic 第 7 次 reject（repeat/pseudo 不受影响）", mixedOk && h7.action === "reject");
+for (let i = 1; i <= 20; i++) {
+	const v = applyVerdict(decideSoftCut(budget, { budgetClass: "confirmed-repeat" }, SOFT_CUT_LIMITS));
+	if (v.action !== "cut") { mixedOk = false; console.log(`  repeat 第 ${i} 次意外 ${v.action}`); }
+}
+const r21 = decideSoftCut(budget, { budgetClass: "confirmed-repeat" }, SOFT_CUT_LIMITS);
+check("混合流：confirmed-repeat 第 21 次 reject", mixedOk && r21.action === "reject");
+for (let i = 1; i <= 3; i++) {
+	const v = applyVerdict(decideSoftCut(budget, { budgetClass: "confirmed-pseudo" }, SOFT_CUT_LIMITS));
+	if (v.action !== "cut") { mixedOk = false; console.log(`  pseudo 第 ${i} 次意外 ${v.action}`); }
+}
+const p4 = decideSoftCut(budget, { budgetClass: "confirmed-pseudo" }, SOFT_CUT_LIMITS);
+check("混合流：confirmed-pseudo 第 4 次 hard-abort", mixedOk && p4.action === "hard-abort" && p4.budgetClass === "confirmed-pseudo",
+	JSON.stringify(p4));
+check("混合流终态三桶恰好耗尽 {6,20,3}",
+	budget.heuristic === 6 && budget.confirmedRepeat === 20 && budget.confirmedPseudo === 3,
+	JSON.stringify(budget));
 
-// confirmed-repeat：第 7 次 take、第 20 次 take、第 21 次 ignore。
-// 前 20 次在单类状态上验证 take 边界；第 21 次用真实混合序列状态断言——
-// 线上走到 confirmed-repeat 第 21 次时 heuristic 额度通常已耗尽（6），
-// 故 total=6+20=26（< 29，仍在 waterfall 后由本函数判 ignore，而非被总闸拦）。
-s = freshState();
-for (let i = 1; i <= 6; i++) { check(`confirmed-repeat 第 ${i} 次 take`, decideSoftCutBudget(s, "confirmed-repeat"), "take"); s.confirmedRepeat += 1; s.total += 1; }
-check("confirmed-repeat 第 7 次 take", decideSoftCutBudget(s, "confirmed-repeat"), "take");
-s.confirmedRepeat += 1; s.total += 1;
-for (let i = 8; i <= 19; i++) { check(`confirmed-repeat 第 ${i} 次 take`, decideSoftCutBudget(s, "confirmed-repeat"), "take"); s.confirmedRepeat += 1; s.total += 1; }
-check("confirmed-repeat 第 20 次 take", decideSoftCutBudget(s, "confirmed-repeat"), "take");
-const mixedAtTwentyFirst = { heuristic: 6, confirmedRepeat: 20, pseudoTool: 0, total: 26 };
-check("confirmed-repeat 第 21 次 ignore（混合态 total=26）", decideSoftCutBudget(mixedAtTwentyFirst, "confirmed-repeat"), "ignore");
-check("confirmed-repeat 超限时 total 确为 26", mixedAtTwentyFirst.total, 26);
-
-// pseudoTool 第 1/2/3 次均 take。
-s = freshState();
-check("pseudoTool 第 1 次 take", decideSoftCutBudget(s, "pseudoTool"), "take");
-s.pseudoTool += 1; s.total += 1;
-check("pseudoTool 第 2 次 take", decideSoftCutBudget(s, "pseudoTool"), "take");
-s.pseudoTool += 1; s.total += 1;
-check("pseudoTool 第 3 次 take", decideSoftCutBudget(s, "pseudoTool"), "take");
-s.pseudoTool += 1; s.total += 1;
-
-// pseudoTool 第 4 次：显式固定 total=28。函数不读 total，本断言只验证类计数分支的
-// 防御性正确性。真实流程中 pseudoTool 第 4 次恰与 total=29 同时发生，此态（28）会在
-// waterfall 前被 shouldShortCircuitSoftCut 总闸拦截，不代表线上可达路径。
-const defensive = { heuristic: 0, confirmedRepeat: 0, pseudoTool: 3, total: 28 };
-check("pseudoTool 第 4 次 ignore（防御性分支，total 固定 28）", decideSoftCutBudget(defensive, "pseudoTool"), "ignore");
-
-// cutClass 缺省（undefined）按 heuristic 判定。
-s = freshState();
-s.heuristic = 3;
-check("cutClass 缺省 → 按 heuristic（第 4 次 take）", decideSoftCutBudget(s, undefined), "take");
-s.heuristic = 6;
-check("cutClass 缺省 → heuristic 桶满即 ignore", decideSoftCutBudget(s, undefined), "ignore");
-
-// --- shouldShortCircuitSoftCut（3 项） --------------------------------------
-check("total=28 → 不短路", shouldShortCircuitSoftCut({ total: 28 }), false);
-check("total=29 → 短路", shouldShortCircuitSoftCut({ total: 29 }), true);
-check("零计数 → 不短路", shouldShortCircuitSoftCut(freshState()), false);
-
-if (failed === 0) console.log("\n全部内核预算纯函数时序断言通过");
+if (failed === 0) console.log("\n全部内核预算集成断言通过");
 else console.log(`\n存在 ${failed} 条断言失败`);
 process.exit(failed === 0 ? 0 : 1);
