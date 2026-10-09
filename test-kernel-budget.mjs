@@ -65,10 +65,9 @@ check("heuristic 第 7 次 ignore（total=6）", (() => {
 })(), "ignore");
 check("heuristic 超限时 total 确为 6", s.total, 6);
 
-// confirmed-repeat：第 7 次 take、第 20 次 take、第 21 次 ignore。
-// 前 20 次在单类状态上验证 take 边界；第 21 次用真实混合序列状态断言——
-// 线上走到 confirmed-repeat 第 21 次时 heuristic 额度通常已耗尽（6），
-// 故 total=6+20=26（< 29，仍在 waterfall 后由本函数判 ignore，而非被总闸拦）。
+// confirmed-repeat：P4 预算策略（2026-10-09）后 confirmed-repeat 恒 "take"
+// （字节级确证不占可耗尽预算，计数器仍照常累加供观测）。第 21 次用真实混合序列
+// 状态断言恒 take；heuristic 上限 6 不受影响。
 s = freshState();
 for (let i = 1; i <= 6; i++) { check(`confirmed-repeat 第 ${i} 次 take`, decideSoftCutBudget(s, "confirmed-repeat"), "take"); s.confirmedRepeat += 1; s.total += 1; }
 check("confirmed-repeat 第 7 次 take", decideSoftCutBudget(s, "confirmed-repeat"), "take");
@@ -76,7 +75,7 @@ s.confirmedRepeat += 1; s.total += 1;
 for (let i = 8; i <= 19; i++) { check(`confirmed-repeat 第 ${i} 次 take`, decideSoftCutBudget(s, "confirmed-repeat"), "take"); s.confirmedRepeat += 1; s.total += 1; }
 check("confirmed-repeat 第 20 次 take", decideSoftCutBudget(s, "confirmed-repeat"), "take");
 const mixedAtTwentyFirst = { heuristic: 6, confirmedRepeat: 20, pseudoTool: 0, total: 26 };
-check("confirmed-repeat 第 21 次 ignore（混合态 total=26）", decideSoftCutBudget(mixedAtTwentyFirst, "confirmed-repeat"), "ignore");
+check("confirmed-repeat 第 21 次 take（P4 恒 take，混合态 total=26）", decideSoftCutBudget(mixedAtTwentyFirst, "confirmed-repeat"), "take");
 check("confirmed-repeat 超限时 total 确为 26", mixedAtTwentyFirst.total, 26);
 
 // pseudoTool 第 1/2/3 次均 take。
@@ -88,11 +87,11 @@ s.pseudoTool += 1; s.total += 1;
 check("pseudoTool 第 3 次 take", decideSoftCutBudget(s, "pseudoTool"), "take");
 s.pseudoTool += 1; s.total += 1;
 
-// pseudoTool 第 4 次：显式固定 total=28。函数不读 total，本断言只验证类计数分支的
-// 防御性正确性。真实流程中 pseudoTool 第 4 次恰与 total=29 同时发生，此态（28）会在
-// waterfall 前被 shouldShortCircuitSoftCut 总闸拦截，不代表线上可达路径。
+// pseudoTool 第 4 次：P4 预算策略后 pseudoTool 恒 "take"（计数器照常累加）。
+// 本断言沿用防御性混合态（total=28），只验证类计数分支恒放行；真实流程中该态
+// 会在 waterfall 前被 shouldShortCircuitSoftCut 总闸拦截，不代表线上可达路径。
 const defensive = { heuristic: 0, confirmedRepeat: 0, pseudoTool: 3, total: 28 };
-check("pseudoTool 第 4 次 ignore（防御性分支，total 固定 28）", decideSoftCutBudget(defensive, "pseudoTool"), "ignore");
+check("pseudoTool 第 4 次 take（P4 恒 take，防御性分支 total=28）", decideSoftCutBudget(defensive, "pseudoTool"), "take");
 
 // cutClass 缺省（undefined）按 heuristic 判定。
 s = freshState();

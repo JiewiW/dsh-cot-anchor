@@ -26,8 +26,10 @@ function check(label, ok, extra) {
 	check("超过 maxPoints 被截断", points.length === 3, points.length);
 }
 {
-	const points = parseRefinedPoints("这条结论特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长", 3, 12);
-	check("单条超长被截断加省略号", points[0].endsWith("…") && points[0].length === 13, `${points[0].length} chars`);
+	const long = "这条结论特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长特别长";
+	const points = parseRefinedPoints(long, 3, 12);
+	// 「宁可不切」口径：超长点整条保留原文，绝不静默硬切加省略号。
+	check("单条超长整条保留（宁可不切）", points[0] === long && !points[0].endsWith("…"), `${points[0].length} chars`);
 }
 
 // --- reasoningKey -----------------------------------------------------------
