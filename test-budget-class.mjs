@@ -161,7 +161,7 @@ const c2 = await softCutHandler({ sessionId: "sess-churn", turn: 7, step: 1, ful
 const c3NextTurn = await softCutHandler({ sessionId: "sess-churn", turn: 8, step: 0, fullVisibleText: churnText }, nullNext);
 const bodyOf = (decision) => decision?.contexts?.[0]?.content?.[0]?.text ?? "";
 check("churn 第 1 次不含升级指令", !bodyOf(c1).includes("升级指令"));
-check("churn 第 2 次含升级指令", bodyOf(c2).includes("升级指令") && bodyOf(c2).includes("必须且只能是一次合法工具调用"));
+check("churn 第 2 次含升级指令", bodyOf(c2).includes("升级指令") && bodyOf(c2).includes("合法工具调用") && bodyOf(c2).includes("最终答复"));
 check("换 turn 后第 1 次再次不含升级指令", !bodyOf(c3NextTurn).includes("升级指令"));
 
 try { fs.rmSync(tempHome, { recursive: true, force: true }); } catch { /* 忽略清理失败 */ }

@@ -47,7 +47,7 @@
 - 因此本插件治得了**单流内退化**（逐字节重复、伪工具调用、数字流、同一块思考内打转），治不了**跨步骤折返跑**：同一结论在十几个步骤里被重新推导、同一取证目标反复换路径尝试——没有任何一次单流能看见这个模式。
 - 软切触发后，内核把已生成前缀正常落盘并发起一次**全新请求**，该请求照常重读全部缓存上下文。软切不减少回合步数；在长任务里，账单的大头是"步数 × 每步膨胀的上下文重读"，不是思考长度，也不是插件注入。
 - 模型可能**知道自己在空转却停不下来**。实测出现过思考中自述"I'm burning turns, let me stop"之后、同一段思考内继续生成下一条探索路线；被注入"立即停止重新分析"后，后续步骤再次触发打转判定。注入的前提是模型会读且会照做，自知不构成刹车。
-- 每个回合软切上限 6 次，打满后当回合剩余生成完全放行。
+- 每个回合软切次数按判定类别分桶计预算（6/20/3，总闸 29），打满后当回合剩余生成放行或升级为终止本回合；完整口径见下方[「软切预算与内核事件口径」](#软切预算与内核事件口径与安装副本逐行对齐)。
 
 ### 一次"插件全程在场仍未约束住"的实测
 
@@ -131,6 +131,46 @@ dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.1.5.tgz
 
 结论：插件带来的新增输入在全会话 token 总量的 0.3% 以内。每个注入块在首现时按未命中计费一次，此后随上下文增长参与后续每一次请求。纪律块体积约占注入量五分之四，但"文本固定"不带来额外缓存收益——该占比只反映体积，不反映命中。
 
+## 软切预算与内核事件口径（与安装副本逐行对齐）
+
+软切的检查节奏、分类预算与事件名均由**安装副本内核**定义，不由本插件决定。下列数值与口径对齐移植后的内核文件 `node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js`（可用随包 `tools/apply-softcut-port.mjs --check` 确认该副本处于标准移植态）；插件侧只返回 cut/ignore 判定与 `cutClass`，不持有这些常量。
+
+### 检查间隔
+
+| 常量 | 值 | 含义 | 来源行 |
+| --- | --- | --- | --- |
+| `SOFT_CUT_CHECK_INTERVAL_CHARS` | **32** | 两次软切检查之间至少累积 32 个新可见字符 | lib/index.js:19 |
+| `SOFT_CUT_TAIL_CHARS` | 240 | 每次征询交给监听器的尾部可见字符数 | lib/index.js:21 |
+
+### 每回合分类预算 6/20/3（total 29）
+
+2026-10-07 缺陷修复后，旧的单一「每回合最多 6 次软切」被**按判定类别分桶**的三预算取代（lib/index.js:22-23 注释明示取代 `MAX_SOFT_CUTS_PER_TURN=6`）：
+
+| 预算桶 | 值 | 覆盖的判定类别 | 来源行 |
+| --- | --- | --- | --- |
+| `BUDGET_HEURISTIC` | **6** | churn / transition 等启发式判定（有误报余量） | lib/index.js:25 |
+| `BUDGET_CONFIRMED_REPEAT` | **20** | repeat / numberRunaway 等字节级确证判定 | lib/index.js:27 |
+| `BUDGET_PSEUDO_TOOL` | **3** | 伪工具文本（pseudoTool） | lib/index.js:29 |
+| `BUDGET_TOTAL` | **29** | waterfall 前廉价总闸 = 6 + 20 + 3 | lib/index.js:40 |
+
+- **6/20/3** 分配下 total 达到 **29** 时任一类别必已达其类上限（抽屉原理，lib/index.js:30-39），总闸在调用插件前直接 continue，不再发起 waterfall。
+- P4 预算策略（lib/index.js:73-79）：`confirmed-repeat` 与 `pseudoTool` 为高置信命中，**恒 "take"**，计数器照常累加供观测；仅 `heuristic` 保留可耗尽语义——计数 ≥ 6 时返回 "ignore"，由调用点升级为终止本回合。
+
+### suppressed 与 abort-turn 事件口径
+
+预算被耗尽或总闸短路时，内核**不静默**，事件流可观测（事件名可在会话日志按字符串检索）：
+
+| 事件名 | 发射时机 | 关键字段 | 来源行 |
+| --- | --- | --- | --- |
+| `agent/soft-cut-suppressed`（reason=`total-gate`） | 每回合首次到达 total 29 总闸 | `threshold: 29`，append 条带 `ignorable: true` | lib/index.js:1394-1408 |
+| `agent/soft-cut-suppressed`（reason=`budget-exhausted`） | heuristic 桶达 6、本次 cut 被判 ignore | `cutClass`（缺省按 heuristic） | lib/index.js:1451-1465 |
+| `phase.abortTurn`（reason=`soft-cut-budget-exhausted`） | budget-exhausted 后置位，请求结束 | `detail.cutClass` | lib/index.js:1475-1478 |
+| `agent/abort-turn`（waterfall） | 步边界消费 abortTurn 时征询处置 | 决定后发 `agent/abort-turn-decided` / `agent/abort-turn-vetoed` | lib/index.js:1172-1213 |
+| `agent/abort-turn-final` / `agent/abort-turn-draining` | P5 粘性终止的最终裁决/排空态 | hard-break / immediate / draining | lib/index.js:1138-1273 |
+| `agent/soft-cut-taken` | 每次软切被实际采纳（三态可观测） | cutClass、计数 | lib/index.js:1485-1496 |
+
+口径边界：`suppressed` 表示「这次 cut 未被采纳」（总闸短路或类预算耗尽），不代表插件未开火；`abort-turn` 是步边界事件，仅 heuristic 耗尽路径会升级到它。
+
 ## 兼容性
 
 | 能力 | DSH 版本 |
@@ -153,7 +193,7 @@ node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs           # 应用
 
 ## 设置项
 
-设置页「COT 锚点」共 52 项，按用途分组。下列"建议值"是针对多数场景的推荐；不同模型差异较大，可据实调整。
+设置页「COT 锚点」共 61 项，按用途分组。下列"建议值"是针对多数场景的推荐；不同模型差异较大，可据实调整。
 
 ### 总开关
 
@@ -281,6 +321,11 @@ node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs           # 应用
 **打断太频繁**
 优先关闭 `enableTransition`；其次调高各判定阈值。`enableChurn` 是启发式判定，最容易偏激进。
 
+## 切句与数字流检测的边界行为（实现备注）
+
+- **`splitSentences`（lib/index.js:538-543）换行边界**：切句前先用 `/\n+/g → 空格` 把**连续换行折叠为单个空格**，即换行本身不构成句子边界，跨行句子按同一句处理；真正的边界只认句末标点——`。！？!?` 后随空白即切（但标点后紧接编号形态，如 `? 2.`、`1、)` 这类列表序号不切），英文句点须后随空白或文末、且不与相邻句点组成省略号、前一位不是数字或句点（防小数与 `...` 误切）。
+- **`detectNumberRunaway`（lib/index.js:1144-1189）枚举/表格形态**：纯函数，输入不足 800 字（`NUMBER_RUN_MIN_TEXT_CHARS`）直接返回 null；用 `/\b\d{1,4}\b/g` 枚举 1–4 位整数 token，相邻 token 间距 ≤ 8 字符（`NUMBER_RUN_MAX_GAP`）且中间不含字母或中日韩汉字才归入同一递增串；每个串须同时满足三项才判命中：字符跨度 ≥ 500（`NUMBER_RUN_MIN_CHARS`）、数字字符占比 ≥ 0.5（`NUMBER_RUN_MIN_DIGIT_RATIO`）、非递减相邻对占比 ≥ 0.55（`NUMBER_RUN_MIN_INCREASE_RATIO`，`b>=a` 即计入）；命中返回 `{chars, digitRatio, increaseRatio, trimTo}`（trimTo 为串首索引，供裁尾定位），五个阈值均由同名 `numberRun*` 设置键运行时绑定。
+
 ## 开发
 
 ```sh
@@ -289,7 +334,7 @@ node test-number-runaway.mjs  # 数字流退化检测
 node test-softcut.mjs         # 软切判定
 ```
 
-测试以 `lib/index.js` 为源，剥离 import/export 后用 `new Function` 求值被测函数，因此新增测试无需改动模块结构。
+测试以 `lib/index.js` 为源，剥离 import/export 后用 `new Function` 求值被测函数，因此新增测试无需改动模块结构。全量回归：仓库根目录所有 `test-*.mjs` 均为独立可执行脚本（无测试框架、无 `npm test`），逐个 `node test-*.mjs` 运行，退出码 0 即通过（`verify-browser.mjs` 非 `test-` 前缀，不在此列）。
 
 ## 许可
 
