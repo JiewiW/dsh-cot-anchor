@@ -1,5 +1,31 @@
 # dsh-cot-anchor 发行说明
 
+## v0.2.1 — 命令执行纪律改走运行时上下文快照（不再随工具单独注入）
+
+### 变更
+
+1. **取消命令执行纪律的单独注入**：v0.2.1 之前，纪律文本随每次工具执行后的推理锚点一起、以一条独立的 `user` 通知（`source.summary = cot-anchor: exec-discipline`）注入，只在锚点实际注入的那一次同行携带。现在改为在 `apply()` 内经 `ctx.inject(['systemPrompt'])` 把纪律注册为**运行时上下文快照（"Current runtime context…"）的一个固定段**：`name = "dsh:cot-anchor-exec-discipline"`、`order = 20000`，位于 auto-memory 记忆规则段（order 10000/10001）之后、dsh-naonao 用户唠叨段（order 100000）之前，与用户请求同一条消息。每轮恒定出现一次、不再按工具调用次数堆叠，且作为稳定前缀段利于 KV 缓存命中。
+2. **纪律文本提为模块级常量 `EXEC_DISCIPLINE_TEXT`**（与 `~/.dsh/AGENTS.md` 第 0 节同源，全文 8 条，逐字复用旧版注入文本，无内容改写）。
+3. **移除 `tools/post-execute` 处理器中遗留的纪律上下文构造与两处 `additionalContexts` 前置拼接**：现在该处理器只负责推理锚点，纪律注入点彻底从工具执行路径剥离。
+4. **补丁脚本废弃**：`patch-cot-anchor-exec-discipline.ps1` 不再需要、也不会再被发布；重写为幂等检测脚本，检测到插件内置纪律段（`EXEC_DISCIPLINE_TEXT` / `dsh:cot-anchor-exec-discipline`）即提示已内置并退出。
+
+### 验证
+
+`node --check lib/index.js` 通过；仓库全部 **27** 个测试文件逐个运行退出码 0。`test-apply-smoke.mjs` 新增三条断言，锁定纪律段已注册为 `systemPrompt.context`、`order === 20000`、`text()` 返回非空常量；`test-budget-class.mjs` 与 `test-apply-smoke.mjs` 的 mock ctx 补上 `inject(['systemPrompt'], …)` 桩以支持新注入路径。
+
+### 兼容性
+
+对外注入接口不变（推理锚点仍以 `user` 消息注入）；仅纪律段的注入渠道从工具执行路径迁移到运行时上下文快照。无新增设置项。旧版（≤0.2.0）的纪律随锚点注入行为由新版固定段取代，无需迁移步骤。
+
+### 安装
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.1
+# 或
+gh release download v0.2.1 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.2.1.tgz
+```
+
 ## v0.2.0 — 内核移植段重做：三类有界预算 + 伪调用超限硬中止 + 事故语料回归
 
 ### 变更（相对 0.1.6 为重做，旧 API 废弃）
