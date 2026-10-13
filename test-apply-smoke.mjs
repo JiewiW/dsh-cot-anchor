@@ -49,11 +49,13 @@ function check(label, condition, extra) {
 
 check("index.js 导出 apply", typeof api.apply === "function");
 check("index.js 声明了 webServer 依赖", Array.isArray(api.inject) && api.inject.includes("webServer"), JSON.stringify(api.inject));
+check("index.js 声明了 systemPrompt 依赖（v0.2.1 纪律段）", Array.isArray(api.inject) && api.inject.includes("systemPrompt"), JSON.stringify(api.inject));
 
 // --- mock ctx：记录注册的路由与事件监听 -----------------------------------
 const routes = [];
 const listeners = [];
 const effects = [];
+const contexts = [];
 const logs = [];
 
 const webServer = {
@@ -64,6 +66,19 @@ const ctx = {
 	webServer,
 	on(event, handler) { listeners.push({ event, handler }); return () => {}; },
 	effect(fn) { effects.push(fn); return () => {}; },
+	// v0.2.1：命令执行纪律改走 systemPrompt.context 注册，apply 内用
+	// ctx.inject(['systemPrompt'], scope => scope.effect(...)) 挂载，mock 需提供。
+	inject(services, callback) {
+		if (services.includes("systemPrompt")) {
+			callback({
+				effect(fn) { const dispose = fn(); effects.push(fn); return typeof dispose === "function" ? dispose : () => {}; },
+				systemPrompt: {
+					context(segment) { contexts.push(segment); return () => {}; }
+				}
+			});
+		}
+		return () => {};
+	},
 	get(key) { return key === "webServer" ? webServer : undefined; },
 	logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m), error: (m) => logs.push(m) }
 };
@@ -83,6 +98,15 @@ check("两条路由都带 handler", routes.every((route) => typeof route.handler
 
 check("监听了 session/event（采集入口）", listeners.some((item) => item.event === "session/event"),
 	listeners.map((item) => item.event).join(", "));
+
+// v0.2.1：命令执行纪律必须注册为 systemPrompt.context 段（不再走 post-execute 注入）
+const disciplineContext = contexts.find((item) => item.name === "dsh:cot-anchor-exec-discipline");
+check("注册了命令执行纪律 context 段", Boolean(disciplineContext), contexts.map((item) => item.name).join(", "));
+check("纪律段 order=20000（记忆规则之后、naonao 之前）", disciplineContext && disciplineContext.order === 20000,
+	disciplineContext ? String(disciplineContext.order) : "未注册");
+check("纪律段 text 返回非空常量", typeof disciplineContext?.text === "function"
+	&& disciplineContext.text().includes("命令执行纪律") && disciplineContext.text().includes("AGENTS.md"),
+	String(disciplineContext?.text?.().length ?? 0) + " 字");
 
 // 采集开关默认关闭时，事件监听必须原样返回、零副作用
 const harvestListener = listeners.find((item) => item.event === "session/event");

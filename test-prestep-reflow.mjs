@@ -51,6 +51,15 @@ const ctx = {
 	webServer,
 	on(event, handler) { listeners.push({ event, handler }); return () => {}; },
 	effect() { return () => {}; },
+	inject(services, callback) {
+		if (services.includes("systemPrompt")) {
+			callback({
+				effect(fn) { fn(); return () => {}; },
+				systemPrompt: { context() { return () => {}; } }
+			});
+		}
+		return () => {};
+	},
 	get(key) { return key === "webServer" ? webServer : undefined; },
 	emit(name, payload) { events.push({ name, payload }); },
 	logger: { info() {}, warn() {}, error() {} }

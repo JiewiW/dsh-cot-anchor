@@ -1,12 +1,21 @@
 /**
- * S4.2 分类软切预算 + 缺陷 4 续步兜底 + 缺陷 3 churn 升级 —— 插件侧测试。
+ * budgetClass 契约 + churn 升级序列/turn 归零 + ToolArgsError 续步兜底 —— 插件侧测试。
  *
  * 挂载方式：readFileSync lib/index.js → 剥 import/export → new Function 取 apply，
- * 用 jest 风格的最小 mock ctx（ctx.on 捕获全部监听器，按事件名取 handler）真实挂载。
- * 三组断言：
- *  ① cutClass：pseudoTool / repeat / numberRunaway → 各自类；churn / transition → heuristic；
- *  ② 缺陷 4：ToolArgsError 短 reasoning（47 字）也强制注入四要素恢复锚点；正常结果不注入；
- *  ③ 缺陷 3：同 session 同 turn 第 2 次 churn 起追加升级指令，换 turn 后重置。
+ * 用最小 mock ctx（ctx.on 捕获全部监听器，按事件名取 handler）真实挂载。
+ * 断言组：
+ *  ① budgetClass：pseudoTool→confirmed-pseudo；repeat/numberRunaway→confirmed-repeat；
+ *     churn/transition→heuristic（wire 枚举与内核 decideSoftCut 归一化口径一致）；
+ *  ② churn 文案序列：第 1 次无升级；第 2 次起追加"本 turn 第 N 次空转…"；达 6 次
+ *     追加插件侧预算说明（注明内核可能因预算拒绝）；session/event 的
+ *     assistant/message(data.turn) 推进 turn 边界后计数归零；同 turn 软切结算消息
+ *     不误归零（决策时就地推进 lastTurn）；
+ *  ③ ToolArgsError：规格形态顶层 error{name,code} + content 文本抽参；工具名入锚；
+ *     抽不到参数名降级通用句式；正常结果不触发；enableToolInject=false 不抑制
+ *     该分支（错误分支位于总开关之前）；旧内核 error.info 形态兼容。
+ *
+ * 注意：settings 是模块级变量，同一进程内第二次 apply 会覆盖全部 handler 可见的
+ * settings——因此总开关关闭的对照组（tempHome2）必须在全部默认配置断言之后挂载。
  */
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs";
@@ -31,6 +40,38 @@ const factory = new Function(
 const BlockAssembler = function () { this.parts = []; };
 BlockAssembler.prototype.add = function () { return this; };
 
+function mount(home, persistedOverrides) {
+	if (persistedOverrides) {
+		fs.mkdirSync(path.join(home, ".dsh", "storages"), { recursive: true });
+		fs.writeFileSync(
+			path.join(home, ".dsh", "storages", "cot-anchor.json"),
+			JSON.stringify(persistedOverrides),
+			"utf8"
+		);
+	}
+	const listeners = [];
+	const webServer = { register() { return () => {}; } };
+	const ctx = {
+		webServer,
+		on(event, handler) { listeners.push({ event, handler }); return () => {}; },
+		effect() { return () => {}; },
+		inject(services, callback) {
+			if (services.includes("systemPrompt")) {
+				callback({ effect() { return () => {}; }, systemPrompt: { context() { return () => {}; } } });
+			}
+			return () => {};
+		},
+		get(key) { return key === "webServer" ? webServer : undefined; },
+		logger: { info() {}, warn() {}, error() {} }
+	};
+	api.apply(ctx);
+	return {
+		ctx,
+		listeners,
+		handlerOf(event) { return listeners.find((item) => item.event === event)?.handler; }
+	};
+}
+
 const api = factory(
 	randomUUID, fs.appendFileSync, fs.existsSync, fs.mkdirSync, fs.readFileSync, fs.statSync, fs.unlinkSync, fs.writeFileSync,
 	() => tempHome, path.join, createRequire, BlockAssembler, (text) => ({ role: "user", content: text })
@@ -43,39 +84,29 @@ function check(label, condition, extra) {
 	if (!ok) failed += 1;
 }
 
-// --- 最小 mock ctx：捕获全部事件监听器 ------------------------------------
-const listeners = [];
-const webServer = { register() { return () => {}; } };
-const ctx = {
-	webServer,
-	on(event, handler) { listeners.push({ event, handler }); return () => {}; },
-	effect() { return () => {}; },
-	get(key) { return key === "webServer" ? webServer : undefined; },
-	logger: { info() {}, warn() {}, error() {} }
-};
-api.apply(ctx);
-
-const softCutHandler = listeners.find((item) => item.event === "agent/soft-cut")?.handler;
-const postExecuteHandler = listeners.find((item) => item.event === "tools/post-execute")?.handler;
+const main = mount(tempHome);
+const softCutHandler = main.handlerOf("agent/soft-cut");
+const postExecuteHandler = main.handlerOf("tools/post-execute");
+const sessionEventHandler = main.handlerOf("session/event");
 check("挂载到 agent/soft-cut", typeof softCutHandler === "function");
 check("挂载到 tools/post-execute", typeof postExecuteHandler === "function");
+check("挂载到 session/event", typeof sessionEventHandler === "function");
 
 const nullNext = async () => null;
 async function cutOf(fullVisibleText, turn = 1, sessionId = "sess-budget") {
 	return softCutHandler({ sessionId, turn, step: 0, fullVisibleText }, nullNext);
 }
+const bodyOf = (decision) => decision?.contexts?.[0]?.content?.[0]?.text ?? "";
 
-// --- ① cutClass 四（五）类典型输入 -----------------------------------------
-// pseudoTool：完整闭合的文本化工具调用（既有夹具，587 字）。
+// --- ① budgetClass 五个 cut 返回点 ------------------------------------------
 const pseudoDecision = await cutOf(PSEUDO_TOOL_CALL_UNIT);
 check("pseudoTool → kind=cut", pseudoDecision?.kind === "cut", JSON.stringify(pseudoDecision?.kind));
-check("pseudoTool → cutClass=pseudoTool", pseudoDecision?.cutClass === "pseudoTool", pseudoDecision?.cutClass);
+check("pseudoTool → budgetClass=confirmed-pseudo", pseudoDecision?.budgetClass === "confirmed-pseudo", pseudoDecision?.budgetClass);
 
-// repeat：短周期复读（无任何工具标签），字节级确证。
 const repeatText = SHORT_CYCLE_UNIT.repeat(60);
 const repeatDecision = await cutOf(repeatText);
 check("repeat → kind=cut", repeatDecision?.kind === "cut", JSON.stringify(repeatDecision?.kind));
-check("repeat → cutClass=confirmed-repeat", repeatDecision?.cutClass === "confirmed-repeat", repeatDecision?.cutClass);
+check("repeat → budgetClass=confirmed-repeat", repeatDecision?.budgetClass === "confirmed-repeat", repeatDecision?.budgetClass);
 
 // numberRunaway：递增裸数字流（数字随序号变化，非字节周期，故不落在 repeat）。
 function buildNumberRun(from = 639, count = 500) {
@@ -85,7 +116,7 @@ function buildNumberRun(from = 639, count = 500) {
 }
 const numberDecision = await cutOf(buildNumberRun());
 check("numberRunaway → kind=cut", numberDecision?.kind === "cut", JSON.stringify(numberDecision?.kind));
-check("numberRunaway → cutClass=confirmed-repeat", numberDecision?.cutClass === "confirmed-repeat", numberDecision?.cutClass);
+check("numberRunaway → budgetClass=confirmed-repeat", numberDecision?.budgetClass === "confirmed-repeat", numberDecision?.budgetClass);
 
 // churn：每句带索引、措辞不同（无字节周期）的高密度重启词。
 const churnText = Array.from({ length: 200 }, (_, i) =>
@@ -93,7 +124,7 @@ const churnText = Array.from({ length: 200 }, (_, i) =>
 ).join(" ");
 const churnDecision = await cutOf(churnText);
 check("churn → kind=cut", churnDecision?.kind === "cut", JSON.stringify(churnDecision?.kind));
-check("churn → cutClass=heuristic", churnDecision?.cutClass === "heuristic", churnDecision?.cutClass);
+check("churn → budgetClass=heuristic", churnDecision?.budgetClass === "heuristic", churnDecision?.budgetClass);
 
 // transition：多个互不相同的显式结论句 + 尾部阶段宣布（避开 repeat 的短周期阈值）。
 const transitionText = Array.from({ length: 12 }, (_, i) =>
@@ -101,71 +132,107 @@ const transitionText = Array.from({ length: 12 }, (_, i) =>
 ).join("") + "\n接下来我先修复挂载行，再重启验证。";
 const transitionDecision = await cutOf(transitionText);
 check("transition → kind=cut", transitionDecision?.kind === "cut", JSON.stringify(transitionDecision?.kind));
-check("transition → cutClass=heuristic", transitionDecision?.cutClass === "heuristic", transitionDecision?.cutClass);
+check("transition → budgetClass=heuristic", transitionDecision?.budgetClass === "heuristic", transitionDecision?.budgetClass);
 
-// --- ② 缺陷 4：ToolArgsError 续步兜底 --------------------------------------
-const reasoning47 = "甲乙丙丁".repeat(12).slice(0, 47); // 恰好 47 字（< MIN_REASONING_CHARS=250）
-check("对照用 reasoning 恰好 47 字", reasoning47.length === 47, String(reasoning47.length));
-
-function sessionWithReasoning(text) {
-	return {
-		surface: { nodes: ["n1"] },
-		eventAt: () => ({ type: "assistant/message", data: { message: { content: [{ type: "reasoning", text }] } } })
-	};
-}
-const exec47 = { agent: { session: sessionWithReasoning(reasoning47) } };
+// --- ② ToolArgsError（规格形态，默认配置下） ---------------------------------
+const execPwsh = { name: "pwsh" };
 const acceptNext = async () => ({ kind: "accept" });
 
-// 任务给定形态：message 无引号字段 → 走"必填参数不合法"兜底。
-const resultArgsError = {
+const resultSpec = {
 	isError: true,
-	content: [{ type: "text", text: "Error: invalid arguments: x" }],
-	error: { message: "invalid arguments: x", info: { name: "ToolArgsError", code: "INVALID_ARGS" } }
+	error: { name: "ToolArgsError", code: "INVALID_ARGS" },
+	content: [{ type: "text", text: 'Error: invalid arguments: missing required property "description"' }]
 };
-const recoveryOut = await postExecuteHandler(exec47, resultArgsError, acceptNext);
-const recoveryCtx = recoveryOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error");
-check("ToolArgsError → 注入 additionalContexts", Array.isArray(recoveryOut?.additionalContexts) && recoveryOut.additionalContexts.length >= 1);
-check("恢复锚点 label=cot-anchor: tool-args-error", Boolean(recoveryCtx), recoveryCtx?.source?.summary);
-const recoveryBody = recoveryCtx?.content?.[0]?.text ?? "";
-check("四要素①未被执行", recoveryBody.includes("未被执行"));
-check("四要素②参数名兜底文案", recoveryBody.includes("必填参数不合法"));
-check("四要素③按 schema 重发且只一次", recoveryBody.includes("参数 schema") && recoveryBody.includes("只重发一次"));
-check("四要素④禁止文本标签", recoveryBody.includes("禁止把工具调用写成") && recoveryBody.includes("文本标签"));
+const specOut = await postExecuteHandler(execPwsh, resultSpec, acceptNext);
+const specBody = specOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error")?.content?.[0]?.text ?? "";
+check("规格形态 → 注入 tool-args-error 锚点", specBody.length > 0);
+check("锚点含工具名 pwsh", specBody.includes("pwsh"));
+check("锚点含抽取到的参数名 description", specBody.includes("description"));
+check("四要素①未被执行", specBody.includes("未被执行"));
+check("四要素③只重发一次", specBody.includes("只重发一次"));
+check("四要素④禁止文本标签", specBody.includes("禁止把工具调用写成") && specBody.includes("文本标签"));
 
-// 引号内实际字段：从 violations/message 取出真实参数名（description），不编造。
-const resultQuoted = {
+// 抽不到参数名 → 通用句式降级，锚点不允许整条缺失。
+const resultNoFields = {
 	isError: true,
-	content: [{ type: "text", text: 'Error: invalid arguments: missing required property "description"' }],
-	error: {
-		message: 'invalid arguments: missing required property "description"',
-		info: { name: "ToolArgsError", code: "INVALID_ARGS", violations: ['missing required property "description"'] }
-	}
+	error: { name: "ToolArgsError", code: "INVALID_ARGS" },
+	content: [{ type: "text", text: "Error: invalid arguments: x" }]
 };
-const quotedOut = await postExecuteHandler(exec47, resultQuoted, acceptNext);
-const quotedBody = quotedOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error")?.content?.[0]?.text ?? "";
-check("引号字段提取到实际参数名 description", quotedBody.includes("description"), quotedBody.slice(0, 60));
-check("提取实际字段时不出现兜底文案", !quotedBody.includes("必填参数不合法"));
+const noFieldsOut = await postExecuteHandler(execPwsh, resultNoFields, acceptNext);
+const noFieldsBody = noFieldsOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error")?.content?.[0]?.text ?? "";
+check("无字段 → 仍注入锚点（不允许整条缺失）", noFieldsBody.length > 0);
+check("无字段 → 通用句式（参数非法 + 按工具完整参数要求重发一次）",
+	noFieldsBody.includes("上一次工具调用参数非法") && noFieldsBody.includes("按工具完整参数要求重发一次"));
+check("无字段 → 不编造参数名", !noFieldsBody.includes("description"));
 
-// 对照：同样 47 字 reasoning，但结果正常（isError 非 true）→ 不注入错误锚点。
+// 旧内核形态兼容：error.info.name/code（顶层 name/code 缺失时）。
+const resultLegacyInfo = {
+	isError: true,
+	error: { info: { name: "ToolArgsError", code: "INVALID_ARGS" } },
+	content: [{ type: "text", text: 'Error: invalid arguments: missing required property "description"' }]
+};
+const legacyOut = await postExecuteHandler(execPwsh, resultLegacyInfo, acceptNext);
+const legacyBody = legacyOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error")?.content?.[0]?.text ?? "";
+check("旧形态 error.info → 同样触发", legacyBody.includes("pwsh") && legacyBody.includes("description"));
+
+// 对照：正常结果（isError 非 true）不触发错误分支。
 const normalOut = await postExecuteHandler(
-	exec47,
+	execPwsh,
 	{ isError: false, content: [{ type: "text", text: "ok" }] },
 	acceptNext
 );
 const normalHasErrorAnchor = normalOut?.additionalContexts?.some((c) => c?.source?.summary === "cot-anchor: tool-args-error") ?? false;
 check("正常结果不注入 tool-args-error 锚点", normalHasErrorAnchor === false);
 
-// --- ③ 缺陷 3：churn 二次升级，turn 切换重置 --------------------------------
-const c1 = await softCutHandler({ sessionId: "sess-churn", turn: 7, step: 0, fullVisibleText: churnText }, nullNext);
-const c2 = await softCutHandler({ sessionId: "sess-churn", turn: 7, step: 1, fullVisibleText: churnText }, nullNext);
-const c3NextTurn = await softCutHandler({ sessionId: "sess-churn", turn: 8, step: 0, fullVisibleText: churnText }, nullNext);
-const bodyOf = (decision) => decision?.contexts?.[0]?.content?.[0]?.text ?? "";
-check("churn 第 1 次不含升级指令", !bodyOf(c1).includes("升级指令"));
-check("churn 第 2 次含升级指令", bodyOf(c2).includes("升级指令") && bodyOf(c2).includes("合法工具调用") && bodyOf(c2).includes("最终答复"));
-check("换 turn 后第 1 次再次不含升级指令", !bodyOf(c3NextTurn).includes("升级指令"));
+// --- ③ churn 升级序列：第 1 次 / 第 2 次 / 第 6 次 ----------------------------
+const esc1 = await cutOf(churnText, 7, "sess-churn-a");
+check("churn 第 1 次不含升级指令", !bodyOf(esc1).includes("本 turn 第"));
+const esc2 = await cutOf(churnText, 7, "sess-churn-a");
+check("churn 第 2 次含升级指令", bodyOf(esc2).includes("本 turn 第 2 次空转")
+	&& bodyOf(esc2).includes("下一步必须是一次真实工具调用或最终结论"));
+for (let i = 3; i <= 5; i++) await cutOf(churnText, 7, "sess-churn-a");
+const esc6 = await cutOf(churnText, 7, "sess-churn-a");
+check("churn 第 6 次含插件侧预算说明", bodyOf(esc6).includes("插件侧已发起 6 次空转打断")
+	&& bodyOf(esc6).includes("内核可能因预算拒绝后续打断"));
+check("第 6 次仍说明字节级重复检测可用", bodyOf(esc6).includes("字节级重复检测仍可能拦截"));
 
-try { fs.rmSync(tempHome, { recursive: true, force: true }); } catch { /* 忽略清理失败 */ }
+// --- ③b turn 归零：session/event 观察者 + 同 turn 结算不误归零 ----------------
+// 路径 ①：观察者识别 assistant/message(data.turn) 推进边界后，新 turn 计数归零。
+const turn1Hit = await cutOf(churnText, 10, "sess-churn-b");
+check("sess-b turn10 首次命中（第 1 次，无升级）", !bodyOf(turn1Hit).includes("本 turn 第"));
+sessionEventHandler({ id: "sess-churn-b" }, { type: "assistant/message", data: { turn: 10, step: 0 } });
+const turn1Hit2 = await cutOf(churnText, 10, "sess-churn-b");
+check("同 turn 结算消息（turn 不增）不归零：第 2 次仍升级", bodyOf(turn1Hit2).includes("本 turn 第 2 次空转"));
+sessionEventHandler({ id: "sess-churn-b" }, { type: "assistant/message", data: { turn: 11, step: 0 } });
+const turn2First = await cutOf(churnText, 11, "sess-churn-b");
+check("观察者推进 turn 11 后计数归零：新 turn 第 1 次无升级", !bodyOf(turn2First).includes("本 turn 第"));
 
-if (failed === 0) console.log("\n全部预算分类 / 续步兜底 / churn 升级断言通过");
+// 路径 ②：无观察者事件时，churn 决策自身携带 turn 就地归零（消除首中偏移）。
+const soloNewTurn = await cutOf(churnText, 20, "sess-churn-c");
+check("换 turn 后首个 churn 决策就地归零：无升级", !bodyOf(soloNewTurn).includes("本 turn 第"));
+const soloNewTurn2 = await cutOf(churnText, 20, "sess-churn-c");
+check("同 turn 第二次仍升级（就地归零未误伤计数）", bodyOf(soloNewTurn2).includes("本 turn 第 2 次空转"));
+
+// --- ④ enableToolInject=false 不抑制错误分支（对照组，必须最后挂载） ---------
+const tempHome2 = path.join(os.tmpdir(), "cot-budget-class-off-" + randomUUID().slice(0, 8));
+fs.mkdirSync(tempHome2, { recursive: true });
+const suppressed = mount(tempHome2, { enableToolInject: false });
+const postExecuteOff = suppressed.handlerOf("tools/post-execute");
+const offErrorOut = await postExecuteOff(execPwsh, resultSpec, acceptNext);
+const offErrorBody = offErrorOut?.additionalContexts?.find((c) => c?.source?.summary === "cot-anchor: tool-args-error")?.content?.[0]?.text ?? "";
+check("总开关关闭 → 错误分支仍注入（不受抑制）", offErrorBody.includes("pwsh") && offErrorBody.includes("description"));
+const offNormalOut = await postExecuteOff(
+	execPwsh,
+	{ isError: false, content: [{ type: "text", text: "ok" }] },
+	acceptNext
+);
+check("总开关关闭 → 正常结果不注入（对照）",
+	!(offNormalOut?.additionalContexts?.some((c) => String(c?.source?.summary ?? "").startsWith("cot-anchor:")) ?? false));
+
+for (const home of [tempHome, tempHome2]) {
+	try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* 忽略清理失败 */ }
+}
+
+if (failed === 0) console.log("\n全部 budgetClass / churn 序列 / ToolArgsError 断言通过");
 else console.log(`\n存在 ${failed} 条断言失败`);
 process.exit(failed === 0 ? 0 : 1);

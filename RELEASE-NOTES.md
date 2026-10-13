@@ -1,9 +1,99 @@
 # dsh-cot-anchor 发行说明
 
+## v0.2.2 — 合并两条演进线（空转治理整改 + 命令执行纪律快照化），统一发布
+
+### 背景
+
+仓库存在两条独立演进线：一条以「空转治理整改（FIX-02/03/04/08/09）」为主（曾以标签 v0.2.1 单独发布），另一条以「命令执行纪律改走运行时上下文快照」为主。本版本将两条线合并为 0.2.2 统一发布，避免同一版本号（v0.2.1）对应两套互不相容的内容。
+
+### 变更
+
+1. **命令执行纪律快照化（沿用 v0.2.1 计划）**：取消 `tools/post-execute` 中随锚点单独注入的纪律块（`source.summary = cot-anchor: exec-discipline`），改为在 `apply()` 内经 `ctx.inject(['systemPrompt'])` 注册为运行时上下文快照固定段：`name = "dsh:cot-anchor-exec-discipline"`、`order = 20000`，位于 auto-memory 记忆规则段之后、dsh-naonao 用户唠叨段之前。文本提为模块级常量 `EXEC_DISCIPLINE_TEXT`，每轮恒定一次、不再按工具调用堆叠、稳定前缀利于 KV 缓存。
+2. **保留 FIX-09 纪律块开关并门控快照段**（合并调和）：`enableExecDisciplineBlock`（默认开）从 post-execute 注入迁移到快照段——开关开时 `text()` 返回纪律全文，关时返回空串（内核装配遇空文本即省略该段）。两线语义都被保留。
+3. **空转治理整改（FIX-02/03/04/08/09）**：打转识别与伪工具调用治理，含数字流检测 `detectNumberRunaway`、`splitSentences` 切句换行边界、`test-d4-d6-guards` 等新增测试与 `tools/apply-softcut-port.mjs` 软切移植工具。
+
+### 验证
+
+`node --check lib/index.js` 通过；仓库全部 **31** 个测试文件逐个运行退出码 0。其中 `test-discipline-switch.mjs` 重写为断言快照段注册（name/order/text）+ 开关门控行为，锁定文案与开关语义；`test-prestep-reflow.mjs`、`test-apply-smoke.mjs`、`test-budget-class.mjs` 的 mock ctx 均已补 `inject(['systemPrompt'], …)` 桩。
+
+### 兼容性
+
+对外注入接口不变（推理锚点仍以 `user` 消息注入）。纪律段注入渠道从工具执行路径迁移到运行时上下文快照。`enableExecDisciplineBlock` 设置项语义保留（默认开）。
+
+### 安装
+
+```bash
+dsh plugin add github:JiewiW/dsh-cot-anchor#v0.2.2
+```
+
 ## 未发布（文档补充）
 
 - **切句换行边界说明（`splitSentences`，lib/index.js:538-543）**：切句前先把连续换行 `/\n+/` 折叠为单个空格，换行本身不构成句子边界；仅句末标点（`。！？!?` 后随空白，英文句点后随空白/文末且非省略号、非小数）才切分，列表序号形态不切。
 - **数字流检测形态说明（`detectNumberRunaway`，lib/index.js:1144-1189）**：纯函数，入文不足 800 字返回 null；以 `/\b\d{1,4}\b/g` 枚举整数 token，相邻间距 ≤8 且中间无字母/汉字归入同一串，串跨度 ≥500、数字占比 ≥0.5、非递减相邻对占比 ≥0.55 三项同时满足才命中，返回 `{chars, digitRatio, increaseRatio, trimTo}`，阈值由 `numberRun*` 设置键绑定。
+
+## v0.2.1 — 命令执行纪律改走运行时上下文快照（不再随工具单独注入）
+
+### 变更
+
+1. **取消命令执行纪律的单独注入**：v0.2.1 之前，纪律文本随每次工具执行后的推理锚点一起、以一条独立的 `user` 通知（`source.summary = cot-anchor: exec-discipline`）注入，只在锚点实际注入的那一次同行携带。现在改为在 `apply()` 内经 `ctx.inject(['systemPrompt'])` 把纪律注册为**运行时上下文快照（"Current runtime context…"）的一个固定段**：`name = "dsh:cot-anchor-exec-discipline"`、`order = 20000`，位于 auto-memory 记忆规则段（order 10000/10001）之后、dsh-naonao 用户唠叨段（order 100000）之前，与用户请求同一条消息。每轮恒定出现一次、不再按工具调用次数堆叠，且作为稳定前缀段利于 KV 缓存命中。
+2. **纪律文本提为模块级常量 `EXEC_DISCIPLINE_TEXT`**（与 `~/.dsh/AGENTS.md` 第 0 节同源，全文 8 条，逐字复用旧版注入文本，无内容改写）。
+3. **移除 `tools/post-execute` 处理器中遗留的纪律上下文构造与两处 `additionalContexts` 前置拼接**：现在该处理器只负责推理锚点，纪律注入点彻底从工具执行路径剥离。
+4. **补丁脚本废弃**：`patch-cot-anchor-exec-discipline.ps1` 不再需要、也不会再被发布；重写为幂等检测脚本，检测到插件内置纪律段（`EXEC_DISCIPLINE_TEXT` / `dsh:cot-anchor-exec-discipline`）即提示已内置并退出。
+
+### 验证
+
+`node --check lib/index.js` 通过；仓库全部 **27** 个测试文件逐个运行退出码 0。`test-apply-smoke.mjs` 新增三条断言，锁定纪律段已注册为 `systemPrompt.context`、`order === 20000`、`text()` 返回非空常量；`test-budget-class.mjs` 与 `test-apply-smoke.mjs` 的 mock ctx 补上 `inject(['systemPrompt'], …)` 桩以支持新注入路径。
+
+### 兼容性
+
+对外注入接口不变（推理锚点仍以 `user` 消息注入）；仅纪律段的注入渠道从工具执行路径迁移到运行时上下文快照。无新增设置项。旧版（≤0.2.0）的纪律随锚点注入行为由新版固定段取代，无需迁移步骤。
+
+### 安装
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.1
+# 或
+gh release download v0.2.1 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.2.1.tgz
+```
+
+## v0.2.0 — 内核移植段重做：三类有界预算 + 伪调用超限硬中止 + 事故语料回归
+
+### 变更（相对 0.1.6 为重做，旧 API 废弃）
+
+1. **内核移植段重做（缺陷 1 主修复）**：移植常量改为三类有界预算 `HEURISTIC_CUT_MAX=6` / `CONFIRMED_REPEAT_CUT_MAX=20` / `CONFIRMED_PSEUDO_CUT_MAX=3`（汇总对象 `SOFT_CUT_LIMITS`），turn 重置点 `softCutBudget: createSoftCutBudget()`，裁决纯函数 `decideSoftCut(budget, decision, limits)` 三分支——未达上限 `cut`、该类达上限 `reject`（静默忽略）、`confirmed-pseudo` 达上限 `hard-abort`（内核向会话发 `agent/error`，错误消息固定 `cot-anchor-budget-pseudo-abort`，中止当前 turn）。**删除 waterfall 前的廉价总闸**：配额耗尽后每个 32 字符检查点仍必达插件检测器，"检测器被询问"与"采纳与否"解耦——这是 2026-10-07 事故（6 次 churn 耗尽配额后 78,586 字符字节级复读无拦截）的直接针对性修复。决策字段 `cutClass` 更名 `budgetClass`（wire 枚举 `heuristic` / `confirmed-repeat` / `confirmed-pseudo`，缺省或未知按 heuristic）；waterfall payload 新增 `budgets` 三类快照供观测。
+2. **churn 升级与 turn 边界归零**：同 session 同 turn 第 2 次起追加升级文案（「本 turn 第 N 次空转，下一步必须是一次真实工具调用或最终结论，禁止继续分析。」），第 6 次起追加预算边界说明；计数键改为按 session 的有界 Map（LRU 32），turn 归零双路径（`assistant/message` 观察者 + 决策 `payload.turn` 就地推进）。
+3. **ToolArgsError 续步兜底强化**：post-execute 错误分支前移到 `enableToolInject` 总开关与结论抽取之前（不受总开关抑制）；错误识别兼容顶层与 info 层的 `ToolArgsError` / `INVALID_ARGS`；缺失参数名三源去重抽取（violations 引号字段 / `missing required property` 文本 / 错误消息引号字段），全空退化通用句式。
+4. **事故语料回归（新增）**：2026-10-07 事故三段语料脱敏入库 `test/fixtures/incident-20261007-{normal,repeat,transition}.txt`，`test-incident-replay.mjs` 以插件真实检测器按 32 字符节奏回放：A1+A3 拼接首次 confirmed-repeat 于 19,392 字符（period=35、count=5）、A3 单独于 4,576 字符、A6 首个 cut 为 churn(heuristic) 于 2,208 字符且 confirmed 类零命中、A1 正常段零误伤；阈值分档（<2 永不 / 2–11 需 30 次 / 12–95 需 5 次 / ≥96 需 2 次）一并锁死。
+
+### 升级后必须重跑内核移植脚本（重要）
+
+0.1.6 的旧移植段与本版锚点不兼容，直接应用会零写入退出。**先回滚再应用**：
+
+```sh
+node tools/apply-softcut-port.mjs --revert   # 回滚旧移植
+node tools/apply-softcut-port.mjs            # 应用新移植
+node tools/apply-softcut-port.mjs --check    # 确认「已应用」
+```
+
+从干净内核（从未应用过移植）直接运行第二条命令即可。脚本幂等、锚点失配会零写入退出；详见 docs/softcut-kernel-port.md「从旧版移植升级」。
+
+### 验证
+
+`node --check lib/index.js` 与补丁后内核均通过；仓库全部 **27** 个测试文件逐个运行退出码 0，其中 test-softcut-budget.mjs（内核预算纯函数时序，27 条）、test-kernel-budget.mjs（移植段源码契约 + 旧 API 零残留守卫，27 条）、test-budget-class.mjs（budgetClass 归类 + churn 升级 + ToolArgsError 兜底，35 条）、test-incident-replay.mjs（事故语料回放 + 阈值分档，29 条）。移植后内核 82,465 字节、region 标记 `DSH-SOFT-CUT-PORT`，hard-abort 固定序列（emit → abort → break）顺序断言通过。检测阈值（REPEAT_MIN_PERIOD=12、REPEAT_MIN_COUNT_SHORT=5、REPEAT_ULTRA_SHORT_MIN_COUNT=30、CHURN_MIN_HITS=18）保持冻结未动。
+
+### 兼容性
+
+0.1.0–0.1.5 插件决策缺 `budgetClass` 字段，内核按 heuristic 归类；0.1.6 的旧移植段与本版不兼容（须先 `--revert`，见上）。无新增设置项，对外注入接口向后兼容。
+
+### 安装
+
+```sh
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.0
+# 或
+gh release download v0.2.0 --repo JiewiW/dsh-cot-anchor
+dsh plugin --profile <你的profile> add ./dsh-cot-anchor-0.2.0.tgz
+```
 
 ## v0.1.6 — 分类软切预算 + 工具参数错误续步兜底 + churn 锚点升级 + MiniMax 伪工具方言
 
