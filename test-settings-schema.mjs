@@ -106,7 +106,13 @@ check("FIX-04 learned 四键同属「CoT 增补」分组", learnedKeys.every((k)
 const ttm = SETTINGS_SCHEMA.find((e) => e.key === "transitionTextMode");
 check("D3 transitionTextMode 控件存在", Boolean(ttm));
 check("D3 默认 separateThreshold", DEFAULT_SETTINGS.transitionTextMode === "separateThreshold", DEFAULT_SETTINGS.transitionTextMode);
-check("D3 控件标记待内核支持", typeof ttm?.label === "string" && ttm.label.includes("待内核支持"), ttm?.label);
+check("D3 控件为枚举下拉", ttm?.type === "select" && Array.isArray(ttm?.options) && ttm.options.length > 0, `${ttm?.type}`);
+check("D3 下拉选项覆盖 separateThreshold 与 disable",
+	["separateThreshold", "disable"].every((v) => ttm.options.some((o) => (typeof o === "string" ? o : o.value) === v)),
+	JSON.stringify(ttm?.options));
+check("D3 控件文案说明内核支持后才生效",
+	[ttm?.label, ttm?.hint].some((text) => typeof text === "string" && text.includes("内核")),
+	`${ttm?.label} / ${ttm?.hint}`);
 check("D3 运行时默认值发布", runtime.transitionTextMode === "separateThreshold", runtime.transitionTextMode);
 
 // --- D5：enableLengthConservationCheck ---------------------------------------
