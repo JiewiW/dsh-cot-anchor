@@ -28,3 +28,8 @@ docs/*-xiaohongshu-post.md
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本机手术/诊断残留（备份、取证脚本，不应入库）
+surgery/
+test-*.mjs
+
