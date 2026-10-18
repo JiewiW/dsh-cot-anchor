@@ -1,11 +1,16 @@
 /**
- * budgetClass 契约 + churn 升级序列/turn 归零 + ToolArgsError 续步兜底 —— 插件侧测试。
+ * budgetClass + cutClass 双字段契约 + churn 升级序列/turn 归零 + ToolArgsError
+ * 续步兜底 —— 插件侧测试。
  *
  * 挂载方式：readFileSync lib/index.js → 剥 import/export → new Function 取 apply，
  * 用最小 mock ctx（ctx.on 捕获全部监听器，按事件名取 handler）真实挂载。
  * 断言组：
- *  ① budgetClass：pseudoTool→confirmed-pseudo；repeat/numberRunaway→confirmed-repeat；
- *     churn/transition→heuristic（wire 枚举与内核 decideSoftCut 归一化口径一致）；
+ *  ① 双字段：pseudoTool→budgetClass=confirmed-pseudo + cutClass=pseudoTool；
+ *     repeat/numberRunaway→budgetClass=confirmed-repeat + cutClass=confirmed-repeat；
+ *     churn/transition→budgetClass=heuristic + cutClass=heuristic
+ *     （cutClass 是内核 decideSoftCut 唯一消费的分类字段——softCutBudgetKey：
+ *     "confirmed-repeat"→confirmedRepeat、"pseudoTool"→pseudoTool、其余→heuristic；
+ *     pseudoTool 必须写 "pseudoTool" 而非 "confirmed-pseudo"，否则归入 heuristic 桶）；
  *  ② churn 文案序列：第 1 次无升级；第 2 次起追加"本 turn 第 N 次空转…"；达 6 次
  *     追加插件侧预算说明（注明内核可能因预算拒绝）；session/event 的
  *     assistant/message(data.turn) 推进 turn 边界后计数归零；同 turn 软切结算消息
@@ -98,15 +103,17 @@ async function cutOf(fullVisibleText, turn = 1, sessionId = "sess-budget") {
 }
 const bodyOf = (decision) => decision?.contexts?.[0]?.content?.[0]?.text ?? "";
 
-// --- ① budgetClass 五个 cut 返回点 ------------------------------------------
+// --- ① budgetClass + cutClass 双字段（五个 cut 返回点） -----------------------
 const pseudoDecision = await cutOf(PSEUDO_TOOL_CALL_UNIT);
 check("pseudoTool → kind=cut", pseudoDecision?.kind === "cut", JSON.stringify(pseudoDecision?.kind));
 check("pseudoTool → budgetClass=confirmed-pseudo", pseudoDecision?.budgetClass === "confirmed-pseudo", pseudoDecision?.budgetClass);
+check("pseudoTool → cutClass=pseudoTool（内核识别的桶名）", pseudoDecision?.cutClass === "pseudoTool", pseudoDecision?.cutClass);
 
 const repeatText = SHORT_CYCLE_UNIT.repeat(60);
 const repeatDecision = await cutOf(repeatText);
 check("repeat → kind=cut", repeatDecision?.kind === "cut", JSON.stringify(repeatDecision?.kind));
 check("repeat → budgetClass=confirmed-repeat", repeatDecision?.budgetClass === "confirmed-repeat", repeatDecision?.budgetClass);
+check("repeat → cutClass=confirmed-repeat", repeatDecision?.cutClass === "confirmed-repeat", repeatDecision?.cutClass);
 
 // numberRunaway：递增裸数字流（数字随序号变化，非字节周期，故不落在 repeat）。
 function buildNumberRun(from = 639, count = 500) {
@@ -117,6 +124,7 @@ function buildNumberRun(from = 639, count = 500) {
 const numberDecision = await cutOf(buildNumberRun());
 check("numberRunaway → kind=cut", numberDecision?.kind === "cut", JSON.stringify(numberDecision?.kind));
 check("numberRunaway → budgetClass=confirmed-repeat", numberDecision?.budgetClass === "confirmed-repeat", numberDecision?.budgetClass);
+check("numberRunaway → cutClass=confirmed-repeat", numberDecision?.cutClass === "confirmed-repeat", numberDecision?.cutClass);
 
 // churn：每句带索引、措辞不同（无字节周期）的高密度重启词。
 const churnText = Array.from({ length: 200 }, (_, i) =>
@@ -125,6 +133,7 @@ const churnText = Array.from({ length: 200 }, (_, i) =>
 const churnDecision = await cutOf(churnText);
 check("churn → kind=cut", churnDecision?.kind === "cut", JSON.stringify(churnDecision?.kind));
 check("churn → budgetClass=heuristic", churnDecision?.budgetClass === "heuristic", churnDecision?.budgetClass);
+check("churn → cutClass=heuristic", churnDecision?.cutClass === "heuristic", churnDecision?.cutClass);
 
 // transition：多个互不相同的显式结论句 + 尾部阶段宣布（避开 repeat 的短周期阈值）。
 const transitionText = Array.from({ length: 12 }, (_, i) =>
@@ -133,6 +142,7 @@ const transitionText = Array.from({ length: 12 }, (_, i) =>
 const transitionDecision = await cutOf(transitionText);
 check("transition → kind=cut", transitionDecision?.kind === "cut", JSON.stringify(transitionDecision?.kind));
 check("transition → budgetClass=heuristic", transitionDecision?.budgetClass === "heuristic", transitionDecision?.budgetClass);
+check("transition → cutClass=heuristic", transitionDecision?.cutClass === "heuristic", transitionDecision?.cutClass);
 
 // --- ② ToolArgsError（规格形态，默认配置下） ---------------------------------
 const execPwsh = { name: "pwsh" };

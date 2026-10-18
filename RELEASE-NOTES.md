@@ -1,5 +1,27 @@
 # dsh-cot-anchor 发行说明
 
+## v0.2.4 — 软切误判治理：结论-转折间距守卫 + cutClass 分类预算接线
+
+### 变更
+
+1. **「结论-转折最大间距」守卫（新增设置 `softCutGapThreshold`，默认 80）**：转折句判定链新增一级守卫——在尾部扫描窗口内取最后一个 Tier-1 结论开启词（"所以"等）与最后一个转折宣告（"接下来"等）的字符距离，超过阈值即判定为「子阶段小结论 + 后续分析 + 转折宣告」的经典误判形态，**拒绝软切**。此前"所以 X 是根因"这类中途小结论会让"所以"与"接下来"各自命中检测器、软切落在整个子阶段中间，白白切断一段正常分析。
+2. **cutClass 分类预算接线补全**：`apply()` 内全部切断返回点补齐 `cutClass` 字段（此前只返回 `budgetClass`，内核 `softCutBudgetKey` 只消费 `cutClass`，导致所有命中恒按启发式归类，字节级确证的 `confirmed-repeat` 也被 6 次/回合的启发式额度耗尽抑制——实测出现过单回合 328 次 `budget-exhausted`）。分类：外部干预分支 `heuristic`、伪工具文本分支 `pseudoTool`（对应内核 BUDGET_PSEUDO_TOOL=3 桶）、repeat/numberRunaway 分支 `confirmed-repeat`（对应内核 BUDGET_CONFIRMED_REPEAT=20 桶）、churn/transition 分支 `heuristic`。
+3. **README 设置表同步**：新增「结论-转折最大间距」设置行与说明。
+
+### 验证
+
+`node --check lib/index.js` 通过；`test-budget-class.mjs` 五个切断返回点各补 `cutClass` 断言。已知环境前置：`test-kernel-budget.mjs` 等 5 个测试期望内核软切补丁的**新版**（含 `createSoftCutBudget`/`SOFT_CUT_LIMITS`），本机内核当前仍是旧版补丁（`decideSoftCutBudget`/`BUDGET_*`），该组测试在 v0.2.3 时代基线即失败，与本次改动无关；内核补丁升级由 `tools/apply-softcut-port.mjs` 新版另行处理。
+
+### 兼容性
+
+对外注入接口与既有设置项不变；新增设置 `softCutGapThreshold`（默认 80，范围 0–400）仅在开启转折句判定时生效。旧版设置文件无此键时回落默认值。
+
+### 安装
+
+```bash
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.4
+```
+
 ## v0.2.2 — 合并两条演进线（空转治理整改 + 命令执行纪律快照化），统一发布
 
 ### 背景

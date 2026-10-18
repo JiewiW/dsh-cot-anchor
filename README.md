@@ -12,7 +12,7 @@ DeepSeek Harness（DSH）插件：治一类特定的模型毛病——**思考�
 ## 快速开始
 
 ```sh
-dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.1
+dsh plugin --profile <你的profile> add github:JiewiW/dsh-cot-anchor#v0.2.4
 ```
 
 重启实例后设置页出现「COT 锚点」标签即生效。结论注入无需任何配置；软切需要内核支持（见[兼容性](#兼容性与软切内核)）。
@@ -98,6 +98,8 @@ node node_modules/dsh-cot-anchor/tools/apply-softcut-port.mjs           # 应用
 | `enableNumberRunaway` | 无意义递增数字流 | 要求数字流足够长（≥ 500 字符跨度等阈值） |
 
 打断太频繁时：先关 `enableTransition`，其次调高判定阈值（`churnMinHits` 默认 18 等）。
+
+自 v0.2.4 起，转折句判定自带「结论-转折间距」守卫（`softCutGapThreshold`，默认 80）：当尾部扫描窗口内最后一个结论开启词（如「所以」）与最后一个转折宣告（如「接下来」）间距超过阈值时，判定为「子阶段小结论 + 后续分析 + 转折宣告」而非阶段边界，拒绝软切——避免「所以 X 是根因」这类中途小结论与后续转折词各自命中检测器、把一次正常分析拦腰切断。
 
 ### 锚点内容
 
