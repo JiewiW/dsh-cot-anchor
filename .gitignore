@@ -33,3 +33,8 @@ Thumbs.db
 surgery/
 test-*.mjs
 
+# 本机工作留痕（维护日志等，仅本机可见）
+.dsh-work/
+# 修复前旧版本备份（本机留存，用于回滚对照）
+lib/index.js.pre-fix-*.js
+
