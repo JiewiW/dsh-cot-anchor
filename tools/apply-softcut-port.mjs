@@ -250,7 +250,21 @@ if (mode === "check") {
 
 // ---- apply ----------------------------------------------------------------
 if (applied) {
-	log("✓ 目标内核已处于移植状态，不重复补丁（幂等）。");
+	// TRC-R14：已移植 ≠ 字段已就位。旧模板缺 detector/阈值时增量注入，不重复移植。
+	const OLD_TAKEN = `\t\t\t\t\t\t\tbudgetState: { ...budgetState }\n\t\t\t\t\t\t}, { ignorable: true });`;
+	const NEW_TAKEN = `\t\t\t\t\t\t\tbudgetState: { ...budgetState },\n\t\t\t\t\t\t\tdetector: cutDecision.detector ?? cutDecision.cutClass ?? "heuristic",\n\t\t\t\t\t\t\tthresholds: { budgetKey, budgetTotal: budgetState.total }\n\t\t\t\t\t\t}, { ignorable: true });`;
+	if (source.includes(OLD_TAKEN)) {
+		writeFileSync(TARGET, source.split(OLD_TAKEN).join(NEW_TAKEN), "utf8");
+		const upgradeSyntaxError = syntaxCheck(TARGET);
+		if (upgradeSyntaxError !== null) {
+			writeFileSync(TARGET, source, "utf8");
+			log(`✗ 增量注入语法校验失败，已回滚：${upgradeSyntaxError}`);
+			process.exit(1);
+		}
+		log("✓ 已移植：增量补 detector/阈值（不重复移植）");
+		process.exit(0);
+	}
+	log("✓ 目标内核已处于移植状态且字段已就位（幂等）。");
 	log("  内核升级或需要重跑本脚本前，必须先执行：node apply-softcut-port.mjs --revert");
 	log("  若内核已被包管理器整体覆盖（无移植标记），直接重新 apply 即可，但需通过下方版本/哈希自检。");
 	process.exit(0);
@@ -971,6 +985,9 @@ const AGENT_LOOP_BLOCKS = [
   },
   {
     name: 'p5-soft-cut-taken',
+    // TRC-R14：已打旧模板的内核走 PRESENT_MARKER 分支，用 upgrade pair 补字段而非跳过。
+    oldClose: `\t\t\t\t\t\t\tbudgetState: { ...budgetState }\n\t\t\t\t\t\t}, { ignorable: true });`,
+    newClose: `\t\t\t\t\t\t\tbudgetState: { ...budgetState },\n\t\t\t\t\t\t\tdetector: cutDecision.detector ?? cutDecision.cutClass ?? "heuristic",\n\t\t\t\t\t\t\tthresholds: { budgetKey, budgetTotal: budgetState.total }\n\t\t\t\t\t\t}, { ignorable: true });`,
     find: L(
       '\t\t\t\t\tsoftCutDecision = cutDecision;',
       '\t\t\t\t\tbudgetState[budgetKey] += 1;',
@@ -990,7 +1007,9 @@ const AGENT_LOOP_BLOCKS = [
       '\t\t\t\t\t\t\tstep,',
       '\t\t\t\t\t\t\tcutClass: cutDecision.cutClass ?? "heuristic",',
       '\t\t\t\t\t\t\tbudgetKey,',
-      '\t\t\t\t\t\t\tbudgetState: { ...budgetState }',
+      '\t\t\t\t\t\t\tbudgetState: { ...budgetState },',
+      '\t\t\t\t\t\t\tdetector: cutDecision.detector ?? cutDecision.cutClass ?? "heuristic",',
+      '\t\t\t\t\t\t\tthresholds: { budgetKey, budgetTotal: budgetState.total }',
       '\t\t\t\t\t\t}, { ignorable: true });',
       '\t\t\t\t\t\tthis.dispatch.emit("agent/soft-cut-taken", {',
       '\t\t\t\t\t\t\tturn,',
@@ -998,6 +1017,8 @@ const AGENT_LOOP_BLOCKS = [
       '\t\t\t\t\t\t\tcutClass: cutDecision.cutClass ?? "heuristic",',
       '\t\t\t\t\t\t\tbudgetKey,',
       '\t\t\t\t\t\t\tbudgetState: { ...budgetState },',
+      '\t\t\t\t\t\t\tdetector: cutDecision.detector ?? cutDecision.cutClass ?? "heuristic",',
+      '\t\t\t\t\t\t\tthresholds: { budgetKey, budgetTotal: budgetState.total },',
       '\t\t\t\t\t\t\tevidenceSeq: takenEvent.seq',
       '\t\t\t\t\t\t});',
       '\t\t\t\t\t} catch {',
