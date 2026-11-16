@@ -13,6 +13,18 @@ import { readFileSync } from "node:fs";
 const sourcePath = new URL("./lib/index.js", import.meta.url);
 let source = readFileSync(sourcePath, "utf8");
 source = source.replace(/^import .*$/gm, "").replace(/^export .*$/gm, "");
+// ── trace 运行时桩 ────────────────────────────────────────────────────────────
+// lib/index.js 从 ./trace-runtime.js 导入 { trace, setTraceConfig }；工厂法（剥 import 后
+// new Function 还原模块作用域）里 import 被剥掉，这两个符号必须由宿主作用域补齐。
+// new Function 的作用域链最终落到 globalThis，故挂 globalThis 即可被 eval 源码取到。
+globalThis.setTraceConfig ??= (cfg) => "sha256:test-trace-config";
+globalThis.trace ??= {
+	emit() {},
+	bind() {},
+	recordConfigChange() {},
+	getBinding() { return null; },
+	hashInput() { return "sha256:test-trace-input"; }
+};
 const factory = new Function(`${source}; return {
 	effectiveChurnPhrases,
 	countChurnHits,
