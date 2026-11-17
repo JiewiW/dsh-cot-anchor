@@ -34,8 +34,9 @@ globalThis.trace ??= {
 	hashInput() { return "sha256:test-trace-input"; }
 };
 const factory = new Function(`${source}; return {
-	normalizeForNGram, computeNGramFingerprint, computeWordBigramFingerprint,
-	detectNGramLoop, NGram_STOPWORDS,
+	normalizeForNGram, computeNGramFingerprint, computeWordGramFingerprint,
+	extractEnglishWordSegments,
+	detectNGramLoop, NGram_STOPWORDS, NGram_WORD_GRAM_SIZE,
 	NGram_PHRASE_MIN, NGram_MIN_COUNT, NGram_COVERAGE_RATIO,
 	DEFAULT_SETTINGS, SETTINGS_SCHEMA, applyRuntimeSettings
 };`);
@@ -148,8 +149,9 @@ test("B：英文措辞漂移型循环 → 词级 2-gram 命中", () => {
 	assert.ok(result !== null, "真循环应命中");
 	assert.ok(result.count >= api.NGram_MIN_COUNT,
 		`count=${result.count} 应 ≥ NGram_MIN_COUNT=${api.NGram_MIN_COUNT}`);
-	assert.match(result.maxGram, /^[a-z]+ [a-z]+$/, `maxGram="${result.maxGram}" 应是英文词级 2-gram`);
-	assert.equal(result.maxGram.split(" ").length, 2, "词级 gram 恰为两个英文词");
+	assert.match(result.maxGram, /^[a-z]+( [a-z]+)+$/, `maxGram="${result.maxGram}" 应是英文词级 n-gram`);
+	assert.equal(result.maxGram.split(" ").length, api.NGram_WORD_GRAM_SIZE,
+		`词级 gram 恰为 ${api.NGram_WORD_GRAM_SIZE} 个英文词（实现自第三轮起由 2-gram 升为 4-gram）`);
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -339,6 +341,10 @@ test("G：中英混合英文整词对真循环 → 词轨并行命中", () => {
 	while (text.length < 800) text += loop + "\n";
 	const result = api.detectNGramLoop(text);
 	assert.ok(result !== null, `英文整词对真循环应命中，实际 ${JSON.stringify(result)}`);
-	assert.equal(result.maxGram.split(" ").length, 2, "词轨 gram 恰为两个英文词");
-	assert.equal(result.maxGram, "verify anchor", "命中词对应为 verify anchor");
+	assert.equal(result.maxGram.split(" ").length, api.NGram_WORD_GRAM_SIZE,
+		`词轨 gram 恰为 ${api.NGram_WORD_GRAM_SIZE} 个英文词`);
+	// 重复单元是 "verify anchor"，4-gram 必然由它拼成（"verify anchor verify anchor"）
+	const words = result.maxGram.split(" ");
+	assert.ok(words.every((w) => w === "verify" || w === "anchor"),
+		`命中词对应全部由 verify/anchor 组成，实际 "${result.maxGram}"`);
 });

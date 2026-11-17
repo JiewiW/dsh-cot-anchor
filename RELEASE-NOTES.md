@@ -1,5 +1,30 @@
 # dsh-cot-anchor 发行说明
 
+## v0.4.5 — 数字哨兵大小写修复：带数字标识符不再被劈成假英文词（n-gram 误切治理）
+
+### 背景
+
+线上会话（session-f72141c6）在核对 MATLAB 列名映射时被连续软切 5 次（turn4/step15、turn4/step16、turn5/step4、turn5/step5、turn5/step7），全部由 `ngram-loop` 命中触发，命中的都是同一个 gram `mins accy mins accyr`。原文只是逐条核对 `mins1_accY → mins1AccY_r32` 这类列名映射，属正常推进，不构成语义循环。
+
+根因在归一化层：`normalizeForNGram` 先把数字替换为大写哨兵 `"DIGIT"`、再粘合 `[-_/\\]`，而词轨取词正则是 `[a-z]{2,}`（只认小写）。于是 `mins1_accY` → `minsDIGIT_accy` → 粘合 → `minsDIGITaccy`，大写哨兵把标识符**从中间劈成** `mins` / `accy` 两个「英文词」。5 行结构相同的映射行把碎片凑成 4-gram，同时满足 count≥5、上下文稳定性 100%、覆盖率 16.8% 三项守卫，被判定为语义循环。
+
+### 变更
+
+1. **数字哨兵改为小写 `digit`**（`lib/index.js` `normalizeForNGram`）：哨兵与周围字母连成单个原子 token（`minsdigitaccy`），标识符不再被切碎，4 词 gram 无法在单行内成形。这正是该函数原有注释「标识符必须保持原子 token」的本来意图——大写哨兵把它破坏了。
+2. **测试装载器修复**：`test/test-ngram-word.mjs` 引用了已重命名的 `computeWordBigramFingerprint`（实现第三轮起为 `computeWordGramFingerprint`），导致该文件此前 10/10 全红；同步修正 B/G 用例停留在 bigram 时代的陈旧断言。
+3. **新增回归测试** `test/test-ngram-identifier.mjs`（8 用例）：事故原形、机制断言（哨兵不劈开标识符）、三类自造清单样例（文件路径/函数名对照/参数表）、带数字真循环、中文真循环、标识符密集非循环边界。
+
+### 验证
+
+- 真实事故 5 段被切推理逐段回放：**5/5 误切全部消除**（改前命中、改后未命中）。
+- 真循环不回归：英文措辞漂移循环、中文整句循环、带数字句子骨架循环、中英混合循环，判定全部与改动前一致。
+- `test/test-ngram-word.mjs` 10/10 通过；`test/test-ngram-identifier.mjs` 8/8 通过；`node --check lib/index.js` 通过。
+- `test/external-softcut.test.mjs` 的 2 处失败为 `externalSoftCut` 默认值断言的既有问题（git HEAD 原版同样失败且为 3 处），与本次改动无关。
+
+### 兼容性
+
+无设置项变化、无对外接口变化。归一化结果中数字占位由 `DIGIT` 变为 `digit`，仅影响内部 n-gram 指纹计算，不进入任何用户可见输出。
+
 ## v0.3.0 — 锚点去重接线 + 转折判定三层加固（误抓推理草稿治理）
 
 ### 背景
