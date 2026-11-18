@@ -59,12 +59,14 @@ const learnedOnlyText = Array.from({ length: 100 }, (_, i) =>
 ).join("\n");
 
 /**
- * 含 14 次出厂空转词「Let me」的长文本：低于出厂阈值 18，但高于下调 6 后的 12。
+ * 含 14 次出厂空转词的长文本：低于出厂阈值 18，但高于下调 6 后的 12。
  * 前置的填充块必须把总长推过 CHURN_MIN_TEXT_CHARS(4000)，否则 detectChurn 会
  * 因长度门限直接返回 null，测不到阈值这条通路。
+ * 2026-11-18：let me 收窄后 "Let me check" 不再命中，改用仍属空重启短语、
+ * 且只被一条正则计数的 "Let me try again"，保持「14 次命中」这个测阈值通路的前提。
  */
 const shiftText = "第 N 步：检查模块依赖与配置生效情况，记录实际取值并比对预期结果，确认无异常后继续。\n".repeat(140)
-	+ Array.from({ length: 14 }, (_, i) => `Let me check item ${i} once.`).join(" ");
+	+ Array.from({ length: 14 }, (_, i) => `Let me try again on item ${i} once.`).join(" ");
 
 // --- ① 未采纳时与出厂完全一致 --------------------------------------------
 api.__setOverlay(EMPTY_OVERLAY);
@@ -78,6 +80,8 @@ check("出厂配置对「再捋一遍」语料零命中", baselineHits === 0, `h
 check("出厂配置对该语料不判定空转", api.detectChurn(learnedOnlyText) === null);
 
 // --- ② 采纳字面量后命中数上升并触发 --------------------------------------
+// 2026-11-18：这里必须是 mode:"active"——只有已 promote 的模式才进判定。
+// 之前误用 "shadow"，等于测试本身在固化「shadow 也参与判定」这个 bug。
 api.__setOverlay({
 	version: 1,
 	patterns: [{
@@ -87,7 +91,7 @@ api.__setOverlay({
 		literal: "再捋一遍",
 		regexSource: "再捋一遍",
 		source: "learned",
-		mode: "shadow",
+		mode: "active",
 		shadowHits: 0,
 		enabled: true
 	}],
@@ -99,11 +103,57 @@ check("采纳后判定为空转", api.detectChurn(learnedOnlyText) !== null);
 check("学习层单独触发为真（出厂配置本不会触发）", api.isLearnedOnlyChurnTrigger(learnedOnlyText) === true);
 check("有效词表包含出厂词表 + 学习词表", api.effectiveChurnPhrases().length === api.__getChurnPhrases().length + 1);
 
-// 影子期计数：只记账，不改判定
+// --- ②b 2026-11-18 shadow 语义回归：shadow 只计数、不进判定 ---------------
+const SHADOW_PATTERN = {
+	id: "pat_shadow01",
+	detector: "churn",
+	kind: "literal-phrase",
+	literal: "再捋一遍",
+	regexSource: "再捋一遍",
+	source: "learned",
+	mode: "shadow",
+	shadowHits: 0,
+	enabled: true
+};
+api.__setOverlay({
+	version: 1,
+	patterns: [{ ...SHADOW_PATTERN }],
+	thresholdShifts: [{ key: "churnMinHits", delta: -16, mode: "shadow", enabled: true, shadowHits: 0 }]
+});
+check("shadow 字面量不进有效词表", api.effectiveChurnPhrases().length === api.__getChurnPhrases().length,
+	`effective=${api.effectiveChurnPhrases().length} base=${api.__getChurnPhrases().length}`);
+check("shadow 字面量不提升命中数", api.countChurnHits(learnedOnlyText) === baselineHits,
+	`hits=${api.countChurnHits(learnedOnlyText)} baseline=${baselineHits}`);
+check("shadow 阈值位移不生效（churnMinHits 仍为 18）", api.effectiveChurnMinHits() === 18,
+	String(api.effectiveChurnMinHits()));
+check("shadow 阈值位移返回 0", api.learnedThresholdShift("churnMinHits") === 0);
+check("shadow 叠加不触发空转判定", api.detectChurn(learnedOnlyText) === null);
+// 关键：即使不进判定，shadow 计数仍必须能增长（否则 promote 工作流失去依据）
 const shadowBefore = api.__getOverlay().patterns[0].shadowHits;
 api.noteChurnShadowHits(learnedOnlyText);
 const shadowAfter = api.__getOverlay().patterns[0].shadowHits;
-check("影子期计数递增", shadowAfter > shadowBefore, `${shadowBefore} → ${shadowAfter}`);
+check("shadow 字面量计数递增", shadowAfter > shadowBefore, `${shadowBefore} → ${shadowAfter}`);
+const shiftShadowBefore = api.__getOverlay().thresholdShifts[0].shadowHits;
+api.noteChurnShadowHits(learnedOnlyText);
+check("shadow 阈值位移计数递增", api.__getOverlay().thresholdShifts[0].shadowHits > shiftShadowBefore,
+	`${shiftShadowBefore} → ${api.__getOverlay().thresholdShifts[0].shadowHits}`);
+
+// active 模式必须进判定（与 shadow 形成对照）
+api.__setOverlay({
+	version: 1,
+	patterns: [{ ...SHADOW_PATTERN, id: "pat_active01", mode: "active" }],
+	thresholdShifts: []
+});
+check("active 字面量进有效词表", api.effectiveChurnPhrases().length === api.__getChurnPhrases().length + 1);
+check("active 字面量能判定空转", api.detectChurn(learnedOnlyText) !== null);
+
+// 复原到 active 叠加，供后续断言继续用
+api.__setOverlay({
+	version: 1,
+	patterns: [{ id: "pat_test01", detector: "churn", kind: "literal-phrase", literal: "再捋一遍",
+		regexSource: "再捋一遍", source: "learned", mode: "active", shadowHits: 0, enabled: true }],
+	thresholdShifts: []
+});
 
 // --- 停用的学习模式不参与判定 --------------------------------------------
 api.__setOverlay({

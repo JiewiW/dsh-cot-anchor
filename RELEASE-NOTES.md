@@ -1,5 +1,44 @@
 # dsh-cot-anchor 发行说明
 
+## v0.4.6 — churn 判定修复：shadow 语义归位，误杀率从 57% 降到 0.1%
+
+### 背景
+
+真实会话量化评测（985 条 assistant 消息）显示，churn 检测的生产配置命中率 57.46%，
+其中绝大多数随后紧跟正常工具调用，属误杀。定位到四个缺陷：
+`learnedPatternsFor` / `learnedThresholdShift` 只检查 `enabled` 不看 `mode`，使 shadow 模式的
+−16 阈值位移和 46 条 shadow 字面量照样生效，`effectiveChurnMinHits` 实际为 2；
+基础词表的裸 `let me` 占全部命中的 72%，平均 2.56 次/3000 字，阈值 18 仅为均值的 5.1 倍；
+trace 快照记基础值 18、判定用 2，任何基于 trace 的复算都算错；
+检查点级命中率与消息级相差 2.7 倍，trace 未标口径。
+
+### 变更
+
+1. **shadow 退出判定**：`learnedPatternsFor` / `learnedThresholdShift` 增加 `mode !== "shadow"` 过滤。
+   生产阈值回到 18，参与判定的 learned literal 从 56 条降到 10 条（已 promote 的 active）。
+2. **shadow 计数解耦**：`noteChurnShadowHits` 从「churn 命中且 learned-only」分支移到 handler 顶部无条件执行。
+   若不改这一处，第 1 项修复后 shadow 计数将永不增长，promote 前"本会切 N 次"的依据失效。
+3. **`let me` 收窄**：由 `/\blet me\b/gi` 改为重启语境白名单（reconsider / re-read / organize my response /
+   start by / try again 等）。正常推进动作的 "Let me check/read/write/note" 不再计数。
+4. **trace 自足复算**：`softCutThresholds.churnMinHits` 改用 `effectiveChurnMinHits()`，
+   补 `churnPhraseCount` / `learnedShadowRounds`；`scanDetector` 的 values 加 `granularity: "checkpoint"`。
+   判定逻辑本身不因口径标注改变。
+
+### 验证
+
+- 出厂命中 23 → 1 条（2.34% → 0.1%），生产命中 566 → 1 条（57.46% → 0.1%），学习层净增 543 → 0。
+- `let me` 命中 2526 → 211 次（2.56 → 0.21 次/3000 字），词表合计泄漏 3.56 → 1.21 次/3000 字；
+  阈值与均值之比 5.1 → 14.9 倍。peak ≥16 共 8 条，恰好 18 的只有 1 条，阈值 18 保留。
+- 滑窗峰值法与严格逐检查点法两种口径结论一致。
+- `test-churn` 8/8、`test-harvest-overlay` 33/33、`test-incident-replay`、`eval/cot-anchor/selftest` 26/26 通过。
+  A6 事故回放基线重定义：脱敏片段独立不触发，持续失控仍触发 churn。
+- `node --check lib/index.js` 通过。
+
+### 兼容性
+
+无设置项变化、无对外接口变化。行为变化集中在 churn 判定：shadow 学习模式不再影响判定
+（符合设计契约），正常英文推理中的 `let me` 不再触发空转。已 promote 的 active 模式行为不变。
+
 ## v0.4.5 — 数字哨兵大小写修复：带数字标识符不再被劈成假英文词（n-gram 误切治理）
 
 ### 背景
