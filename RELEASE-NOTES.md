@@ -1,5 +1,33 @@
 # dsh-cot-anchor 发行说明
 
+## v0.4.7 — action-churn 行动提议误触发治理：泛动词收窄
+
+### 背景
+
+真实会话中出现 `COT anchor — 行动提议空转`（action-churn）连续 5 次软切。定位到
+`detectActionChurn` 的 `CHURN_ACTION_PHRASES` 词表过宽：`先.{0,6}?(看看|访问|探|查)`
+这类正则把「让我先看看工作目录 / 先查一下记忆」等正常思考也算成「行动提议」，
+尾窗 3000 字内命中 23 次（阈值 18）即触发。锚点文案断言「全程没有实际工具调用」，
+但检测器只数正则、并未检查是否真的有 tool_call——属名不副实的误判。
+
+### 变更
+
+1. **`CHURN_ACTION_PHRASES` 动词表收窄**：六条正则删掉「看看 / 访问 / 探 / 查 / 验证 /
+   打开 / 试一下」等泛动词，仅保留 `curl` / `fetch` / `web_fetch` 工具名。
+2. **阈值与其它检测器不变**：`CHURN_ACTION_MIN_HITS = 18`、`enableChurn` 开关、
+   transition / pseudoTool / repeat / over-long / n-gram 等软切模块均未改动。
+
+### 验证
+
+- 原误触样本按新正则实测命中 23 → 4，低于阈值 18，不再触发。
+- `node --check lib/index.js` 通过。
+- 两处同步：源码 `lib/index.js` 与 web 生效副本 `node_modules/dsh-cot-anchor/lib/index.js`。
+
+### 兼容性
+
+无设置项变化、无对外接口变化。行为变化仅限 action-churn 判定：普通技术文本中的
+「看看 / 查 / 探」不再计入行动提议空转。
+
 ## v0.4.6 — churn 判定修复：shadow 语义归位，误杀率从 57% 降到 0.1%
 
 ### 背景
